@@ -1,0 +1,65 @@
+// Протокол пакетов LoRa — Mesh-net Тропы
+//
+// Фиксированный бинарный формат 64 байта (НЕ protobuf-encoded на проводе!).
+// Этот файл — схема / документация структуры пакета.
+// Реальная сериализация — вручную, побайтово:
+//   C++:    firmware/esp32-terminal/lib/mesh_packet/
+//   Python: services/lora-station/mesh_packet.py
+//
+// Раскладка байт в пакете (64 байта):
+//   [0]      version    — версия протокола (сейчас 1)
+//   [1]      type       — тип: 0=PING, 1=CHAT, 2=SOS, 3=ACK
+//   [2-3]    device_id  — ID устройства (uint16, big-endian)
+//   [4]      channel    — канал: 0=TOURIST, 1=RESCUE
+//   [5]      ttl        — Time To Live (декрементируется при ретрансляции, default=3)
+//   [6-9]    latitude   — широта × 1e6, int32 big-endian (пример: 43.45 → 43450000)
+//   [10-13]  longitude  — долгота × 1e6, int32 big-endian (пример: 41.20 → 41200000)
+//   [14-61]  payload    — полезная нагрузка 48 байт (зависит от типа, остаток 0x00)
+//   [62-63]  crc16      — CRC-16/CCITT-FALSE от байт [0..61], big-endian
+
+syntax = "proto3";
+package meshnet;
+
+enum PacketType {
+  PING = 0;   // Периодический маяк с координатами (каждые ~30 сек)
+  CHAT = 1;   // Текстовое сообщение (UTF-8, до 48 байт в payload)
+  SOS  = 2;   // Сигнал бедствия (отправляется 3 раза с интервалом 500 мс)
+  ACK  = 3;   // Подтверждение доставки SOS
+}
+
+enum Channel {
+  TOURIST = 0;  // Открытый канал — все устройства
+  RESCUE  = 1;  // Закрытый канал — только whitelist device_id
+}
+
+// Логическое представление (для документации / Python dataclass)
+message MeshPacket {
+  uint32     version   = 1;  // всегда 1
+  PacketType type      = 2;
+  uint32     device_id = 3;  // uint16 на проводе
+  Channel    channel   = 4;
+  uint32     ttl       = 5;  // uint8 на проводе, default 3
+  sint32     latitude  = 6;  // × 1e6
+  sint32     longitude = 7;  // × 1e6
+  bytes      payload   = 8;  // ровно 48 байт на проводе
+  uint32     crc16     = 9;  // uint16 на проводе
+}
+
+// --- Структуры payload по типам ---
+
+// PING payload[0..47]:
+//   [0]    battery_pct  — заряд 0–100 %
+//   [1]    rssi_last    — RSSI последнего пакета (int8, 0=нет данных)
+//   [2-3]  seq          — порядковый номер (uint16, big-endian)
+//   [4-47] зарезервировано, 0x00
+
+// CHAT payload[0..47]:
+//   [0-47] текст UTF-8, остаток 0x00
+
+// SOS payload[0..47]:
+//   [0]    sos_type  — 0=неизвестно, 1=падение, 2=медицина, 3=заблудился, 4=погода
+//   [1-47] сообщение UTF-8, остаток 0x00
+
+// ACK payload[0..47]:
+//   [0-1]  ack_device_id  — device_id чей SOS подтверждаем (uint16, big-endian)
+//   [2-47] зарезервировано, 0x00
