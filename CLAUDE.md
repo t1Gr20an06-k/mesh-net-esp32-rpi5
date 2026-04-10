@@ -197,12 +197,14 @@ sudo journalctl -u "mesh-*" -p err -f
 - ✅ `platformio.ini` — RadioLib @ ^6.6.0, monitor_speed=115200, все 8 пин-макросов
 - ✅ Тест Python кодека прошёл: 64 байт, lat/lon roundtrip, CRC=0x3784
 
-### Этап 0.2 — Схема БД ⬅ СЛЕДУЮЩИЙ ШАГ
+### Этап 0.2 — Схема БД ✅ ВЫПОЛНЕН
 Файлы: `scripts/db_init/init.sql`, `scripts/db_init/init.sh`
-- Таблицы: `devices`, `pings`, `sos_events`, `chat_messages`
-- Скрипт инициализации для RPi5
+- ✅ `init.sql` — 4 таблицы (devices, pings, sos_events, chat_messages), WAL-режим, индексы, FK
+- ✅ `init.sh` — скрипт инициализации для RPi5: создаёт /var/lib/mesh-net/, применяет схему, проверяет результат
+- Координаты хранятся как int32 × 1e6 (без конвертации из формата пакета)
+- SOS-записи никогда не удаляются — поля acked/resolved для отслеживания реакции
 
-### Этап 1 — Прошивка ESP32-S3
+### Этап 1 — Прошивка ESP32-S3 ⬅ СЛЕДУЮЩИЙ ШАГ
 Файлы: `firmware/esp32-terminal/src/`
 - Инициализация LoRa HT-RA62 (SX1262) через SPI
 - Отправка PING-пакета каждые N секунд с GPS-координатами
@@ -247,7 +249,7 @@ sudo journalctl -u "mesh-*" -p err -f
 | `services/lora-station/mesh_packet.py` | ✅ Python кодек, тест пройден |
 | `firmware/esp32-terminal/platformio.ini` | ✅ RadioLib + пин-макросы + monitor_speed |
 | `firmware/esp32-terminal/src/main.cpp` | ⬜ Заглушка — нужно писать (Этап 1) |
-| `scripts/db_init/init.sql` | ⬜ Не создан (Этап 0.2 — следующий) |
+| `scripts/db_init/init.sql` + `init.sh` | ✅ 4 таблицы + скрипт инициализации |
 | Python-сервисы (lora-station демон, rescue-api) | ⬜ Не написаны |
 | React-дашборд | ⬜ Не написан |
 
