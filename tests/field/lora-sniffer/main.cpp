@@ -43,6 +43,11 @@ static SX1262 radio = new Module(hal, PIN_CS, PIN_DIO1, PIN_RESET, PIN_BUSY);
 static volatile bool g_stop = false;
 static void on_sigint(int) { g_stop = true; }
 
+// Флаг "пришёл пакет" — взводится в обработчике прерывания DIO1.
+// volatile, потому что меняется в callback из IRQ-контекста.
+static volatile bool g_packet_ready = false;
+static void on_packet_received(void) { g_packet_ready = true; }
+
 // ---------------------------------------------------------------------------
 static const char* pkt_type_name(uint8_t t) {
     switch ((PacketType)t) {
@@ -80,18 +85,38 @@ int main() {
     radio.setCRC(2);
     radio.setDio2AsRfSwitch(true);
 
+    // Привязываем callback на прерывание DIO1 (пакет принят)
+    radio.setPacketReceivedAction(on_packet_received);
+
+    // Запускаем непрерывный приём — радио будет постоянно слушать эфир.
+    state = radio.startReceive();
+    if (state != RADIOLIB_ERR_NONE) {
+        printf("startReceive FAIL, code %d\n", state);
+        return 1;
+    }
+
     printf("[RX] ожидание пакетов (Ctrl-C для выхода)...\n\n");
 
     uint8_t buf[MESH_PACKET_SIZE];
     uint32_t rx_count = 0, crc_bad = 0;
 
     while (!g_stop) {
-        // Приём с таймаутом, чтобы можно было корректно выйти по Ctrl-C
-        int st = radio.receive(buf, MESH_PACKET_SIZE);
+        if (!g_packet_ready) {
+            // Не жжём CPU: спим 1 мс между проверками флага.
+            usleep(1000);
+            continue;
+        }
+        g_packet_ready = false;
+
+        float rssi = radio.getRSSI();
+        float snr  = radio.getSNR();
+        int st = radio.readData(buf, MESH_PACKET_SIZE);
+
+        // Перезапускаем приём СРАЗУ после readData, чтобы не пропустить
+        // следующий пакет, пока обрабатываем текущий.
+        radio.startReceive();
 
         if (st == RADIOLIB_ERR_NONE) {
-            float rssi = radio.getRSSI();
-            float snr  = radio.getSNR();
             rx_count++;
 
             MeshPacket pkt;
@@ -113,13 +138,10 @@ int main() {
             if (!ok) {
                 printf("         raw: "); print_hex(buf, MESH_PACKET_SIZE); printf("\n");
             }
-        } else if (st == RADIOLIB_ERR_RX_TIMEOUT) {
-            // норма, просто ещё ничего не прилетело
         } else if (st == RADIOLIB_ERR_CRC_MISMATCH) {
             printf("[RX] LoRa-CRC error\n");
         } else {
-            printf("[RX] error %d\n", st);
-            usleep(100000);
+            printf("[RX] readData error %d\n", st);
         }
     }
 
