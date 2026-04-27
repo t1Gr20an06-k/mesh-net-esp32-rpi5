@@ -15,7 +15,7 @@
 #include <unistd.h>
 #include <signal.h>
 
-#include "PiHal.h"           // из RadioLib/examples/NonArduino/Raspberry/
+#include "PiHal.h"           // из RadioLib/examples/NonArduino/Raspberry
 #include <RadioLib.h>
 #include "MeshPacket.h"      // наш общий кодек из firmware/esp32-terminal/lib/mesh_packet/
 
