@@ -26,8 +26,8 @@ endif()
 set(MESH_PACKET_DIR "${CMAKE_CURRENT_SOURCE_DIR}/../../../firmware/esp32-terminal/lib/mesh_packet")
 
 # --- Путь до RadioLib HAL для Raspberry Pi ---------------------------------
-# RadioLib кладёт PiHal.h в examples/NonArduino/Raspberry/
-set(PI_HAL_DIR "${RADIOLIB_DIR}/examples/NonArduino/Raspberry")
+# В свежем RadioLib PiHal.h лежит в src/hal/RPi/ (раньше был в examples/)
+set(PI_HAL_DIR "${RADIOLIB_DIR}/src/hal/RPi")
 
 # --- Подключаем RadioLib как сабпроект --------------------------------------
 add_subdirectory(${RADIOLIB_DIR} radiolib_build EXCLUDE_FROM_ALL)
