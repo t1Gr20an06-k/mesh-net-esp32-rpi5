@@ -256,10 +256,12 @@ class SX1262:
         # 3) Сброс ошибок устройства, иначе get_device_errors потом мусорит
         self._cmd(_CMD_CLEAR_DEVICE_ERRORS, bytes([0x00, 0x00]))
 
-        # 4) Калибровка всего (datasheet §13.1.12, mask=0x7F = все блоки)
+        # 4) Калибровка всего (datasheet §13.1.12, mask=0x7F = все блоки).
+        # После CALIBRATE BUSY поднимается высоко на ~3.5 мс (RC64k+RC13M),
+        # ждём с запасом; затем BUSY low.
         self._cmd(_CMD_CALIBRATE, bytes([0x7F]))
-        time.sleep(0.005)
-        self._wait_busy_low()
+        time.sleep(0.025)
+        self._wait_busy_low(timeout_s=2.0)
 
         # 5) Регулятор — DC-DC (на HT-RA62 катушка стоит)
         self._cmd(_CMD_SET_REGULATOR_MODE, bytes([_REG_DCDC]))
@@ -306,9 +308,16 @@ class SX1262:
             0x00,         # IQ нормальный
         ]))
 
-        # 14) Sync word PRIVATE
+        # 14) Sync word PRIVATE + read-back self-check
         self._write_register(_REG_LORA_SYNC_WORD_MSB, _SYNC_WORD_PRIVATE_MSB)
         self._write_register(_REG_LORA_SYNC_WORD_LSB, _SYNC_WORD_PRIVATE_LSB)
+        sw_msb = self._read_register(_REG_LORA_SYNC_WORD_MSB)
+        sw_lsb = self._read_register(_REG_LORA_SYNC_WORD_LSB)
+        if sw_msb != _SYNC_WORD_PRIVATE_MSB or sw_lsb != _SYNC_WORD_PRIVATE_LSB:
+            raise RuntimeError(
+                f"Sync word не записался: записали 0x{_SYNC_WORD_PRIVATE_MSB:02X}/"
+                f"0x{_SYNC_WORD_PRIVATE_LSB:02X}, прочитали 0x{sw_msb:02X}/0x{sw_lsb:02X}"
+            )
 
         # 15) DIO2 как RF switch — модули HT-RA62 используют это для T/R-переключения
         self._cmd(_CMD_SET_DIO2_AS_RF_SWITCH, bytes([0x01]))
@@ -330,11 +339,22 @@ class SX1262:
     # ------------------------------------------------------------------
     # Высокий уровень: RX
     # ------------------------------------------------------------------
-    def start_receive(self) -> None:
-        """Включить непрерывный RX (timeout 0xFFFFFF = continuous)."""
+    def start_receive(self, verify: bool = False) -> None:
+        """
+        Включить непрерывный RX (timeout 0xFFFFFF = continuous).
+        При verify=True проверим, что чип реально в RX (chip_mode=5).
+        """
         self._irq_event.clear()
         self._clear_irq()
         self._cmd(_CMD_SET_RX, bytes([0xFF, 0xFF, 0xFF]))
+        if verify:
+            time.sleep(0.001)
+            mode, _ = self.get_status()
+            if mode != 5:
+                raise RuntimeError(
+                    f"setRx не перевёл чип в RX (chip_mode={mode}). "
+                    f"errs=0x{self.get_device_errors():04X}"
+                )
 
     def wait_rx(self, timeout_s: Optional[float] = None,
                 poll_irq: bool = True, poll_interval_s: float = 0.05) -> bool:
@@ -373,10 +393,13 @@ class SX1262:
         chip_mode: 2=STBY_RC, 3=STBY_XOSC, 4=FS, 5=RX, 6=TX
         cmd_status: 1=RFU, 2=Data available, 3=Cmd timeout, 4=Cmd error,
                     5=Failure to execute, 6=TX done.
+
+        По datasheet §13.2 status-байт SX126x приходит ПЕРВЫМ на MISO,
+        одновременно с opcode на MOSI. Поэтому читаем rx[0], а не rx[1].
         """
         self._wait_busy_low()
         rx = self._spi_xfer([_CMD_GET_STATUS, 0x00])
-        st = rx[1]
+        st = rx[0]
         return ((st >> 4) & 0x07, (st >> 1) & 0x07)
 
     def get_device_errors(self) -> int:

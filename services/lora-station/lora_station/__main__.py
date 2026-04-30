@@ -107,7 +107,21 @@ def main() -> int:
     signal.signal(signal.SIGINT,  _on_signal)
     signal.signal(signal.SIGTERM, _on_signal)
 
-    radio.start_receive()
+    # verify=True — сразу проверим, что чип реально перешёл в RX,
+    # иначе init "ОК" но эфир молча игнорируется.
+    try:
+        radio.start_receive(verify=True)
+    except RuntimeError as exc:
+        log.error("start_receive: %s", exc)
+        radio.close()
+        db.close()
+        return 4
+
+    # Снимок состояния сразу после init — пишем всегда (не только в -v).
+    mode, cmd_st = radio.get_status()
+    errs = radio.get_device_errors()
+    log.info("[init-diag] chip_mode=%d cmd_st=%d device_errors=0x%04X",
+             mode, cmd_st, errs)
     log.info("RX запущен, слушаем эфир (Ctrl-C для выхода)")
 
     rx_count = 0
