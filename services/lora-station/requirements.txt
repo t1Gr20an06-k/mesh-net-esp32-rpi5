@@ -1,3 +1,13 @@
-spidev==3.6
-gpiozero==2.0.1
-lgpio==0.2.2.0
+# Pip-зависимости lora-station.
+#
+# spidev / gpiozero / lgpio здесь НЕ перечислены — на Raspberry Pi OS
+# они ставятся через apt (см. install.sh):
+#     sudo apt install python3-spidev python3-gpiozero python3-lgpio
+# и подхватываются venv через --system-site-packages.
+#
+# Причина: pip-вариант lgpio собирает C-код через swig, что требует
+# тулчейна и тянет свежий Python. Системные .so от apt уже скомпилированы
+# для актуального Python и стабильнее.
+#
+# Сюда добавляй ТОЛЬКО pure-Python пакеты, которых нет в apt
+# (например, structlog в будущем).
