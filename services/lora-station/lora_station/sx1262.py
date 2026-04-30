@@ -53,6 +53,7 @@ _CMD_GET_RX_BUFFER_STATUS     = 0x13
 _CMD_GET_PACKET_STATUS        = 0x14
 _CMD_GET_DEVICE_ERRORS        = 0x17
 _CMD_CLEAR_DEVICE_ERRORS      = 0x07
+_CMD_GET_STATUS               = 0xC0
 
 # Standby modes
 _STDBY_RC   = 0x00
@@ -335,12 +336,58 @@ class SX1262:
         self._clear_irq()
         self._cmd(_CMD_SET_RX, bytes([0xFF, 0xFF, 0xFF]))
 
-    def wait_rx(self, timeout_s: Optional[float] = None) -> bool:
+    def wait_rx(self, timeout_s: Optional[float] = None,
+                poll_irq: bool = True, poll_interval_s: float = 0.05) -> bool:
         """
-        Блокирующее ожидание прерывания DIO1.
-        Возвращает True если прерывание пришло, False по таймауту.
+        Ждать готовности RX. Возвращает True если IRQ обнаружено.
+
+        Опрашиваем DIO1 через gpiozero (быстрый путь) И параллельно
+        периодически читаем IRQ-регистр через SPI (fallback). На RPi5
+        gpiozero+lgpio иногда не ловит rising edge от SX1262 — polling
+        SPI это компенсирует, ценой ~5–20 мкс SPI-обмена раз в 50 мс.
         """
-        return self._irq_event.wait(timeout=timeout_s)
+        if not poll_irq:
+            return self._irq_event.wait(timeout=timeout_s)
+
+        deadline = None if timeout_s is None else (time.monotonic() + timeout_s)
+        while True:
+            # Быстрый путь: callback от gpiozero уже взвёл event.
+            wait_left = poll_interval_s
+            if deadline is not None:
+                wait_left = min(wait_left, max(0.0, deadline - time.monotonic()))
+            if self._irq_event.wait(timeout=wait_left):
+                return True
+            # SPI-polling: чип реально что-то поймал?
+            irq = self._read_irq_status()
+            if irq & (IRQ_RX_DONE | IRQ_TX_DONE | IRQ_TIMEOUT |
+                      IRQ_CRC_ERROR | IRQ_HEADER_ERROR):
+                # Эмулируем "пришло прерывание" — read_rx разберёт irq и сбросит.
+                self._irq_event.set()
+                return True
+            if deadline is not None and time.monotonic() >= deadline:
+                return False
+
+    def get_status(self) -> tuple[int, int]:
+        """
+        GET_STATUS (0xC0): вернуть (chip_mode, cmd_status).
+        chip_mode: 2=STBY_RC, 3=STBY_XOSC, 4=FS, 5=RX, 6=TX
+        cmd_status: 1=RFU, 2=Data available, 3=Cmd timeout, 4=Cmd error,
+                    5=Failure to execute, 6=TX done.
+        """
+        self._wait_busy_low()
+        rx = self._spi_xfer([_CMD_GET_STATUS, 0x00])
+        st = rx[1]
+        return ((st >> 4) & 0x07, (st >> 1) & 0x07)
+
+    def get_device_errors(self) -> int:
+        """GetDeviceErrors (0x17): 16-битная маска ошибок."""
+        self._wait_busy_low()
+        rx = self._spi_xfer([_CMD_GET_DEVICE_ERRORS, 0x00, 0x00, 0x00])
+        return ((rx[2] & 0xFF) << 8) | (rx[3] & 0xFF)
+
+    def get_irq_raw(self) -> int:
+        """Сырое значение IRQ-регистра (без сброса) — для отладки."""
+        return self._read_irq_status()
 
     def read_rx(self) -> Optional[RxResult]:
         """

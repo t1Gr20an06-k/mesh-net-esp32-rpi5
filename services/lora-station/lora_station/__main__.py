@@ -113,8 +113,26 @@ def main() -> int:
     rx_count = 0
     crc_bad  = 0
 
+    # Диагностика: раз в 5 секунд печатаем состояние чипа.
+    last_diag_t = 0.0
+    DIAG_INTERVAL_S = 5.0
+    _MODE_NAMES = {2: "STBY_RC", 3: "STBY_XOSC", 4: "FS", 5: "RX", 6: "TX"}
+
     try:
         while not stopped:
+            if args.verbose:
+                now = time.monotonic()
+                if now - last_diag_t >= DIAG_INTERVAL_S:
+                    last_diag_t = now
+                    try:
+                        mode, cmd_st = radio.get_status()
+                        irq_raw = radio.get_irq_raw()
+                        errs = radio.get_device_errors()
+                        log.debug("[diag] chip=%s cmd_st=%d irq=0x%04X errs=0x%04X",
+                                  _MODE_NAMES.get(mode, f"?{mode}"),
+                                  cmd_st, irq_raw, errs)
+                    except Exception as exc:  # noqa: BLE001
+                        log.debug("[diag] FAIL: %s", exc)
             # Ждём IRQ ≤ 200 мс, чтобы регулярно проверять TX-очередь.
             got_irq = radio.wait_rx(timeout_s=0.2)
 
