@@ -216,18 +216,29 @@ sudo journalctl -u "mesh-*" -p err -f
 - Координаты хранятся как int32 × 1e6 (без конвертации из формата пакета)
 - SOS-записи никогда не удаляются — поля acked/resolved для отслеживания реакции
 
-### Этап 1 — Прошивка ESP32-S3 ⬅ СЛЕДУЮЩИЙ ШАГ
-Файлы: `firmware/esp32-terminal/src/`
-- Инициализация LoRa HT-RA62 (SX1262) через SPI
-- Отправка PING-пакета каждые N секунд с GPS-координатами
-- SOS по нажатию кнопки (3 повтора × 500 мс)
-- Приём ACK и CHAT-сообщений
+### Этап 1 — Прошивка ESP32-S3 ✅ ВЫПОЛНЕН
+Файлы: `firmware/esp32-terminal/src/main.cpp`, `firmware/esp32-terminal/include/cert.h`, `firmware/esp32-terminal/scripts/gen_cert.sh`, `firmware/esp32-terminal/scripts/patch_esp32_https_server.py`
+- ✅ Инициализация LoRa HT-RA62 (SX1262) через SPI с TCXO 1.8 В
+- ✅ Радио-режим: 868 МГц, SF=10, BW=125 кГц, CR=4/5, TX power 14 дБм
+- ✅ PING-пакет каждые N секунд с актуальными GPS-координатами от телефона
+- ✅ SOS-бёрст по запросу с веб-страницы: 3 пакета × 500 мс
+- ✅ Dual-core архитектура: Core 0 = Wi-Fi/HTTPS-сервер, Core 1 = LoRa main-loop
+- ✅ Wi-Fi точка доступа `MeshNet-001` на 192.168.4.1
+- ✅ HTTPS-сервер на 443 (self-signed cert, CN=192.168.4.1) — нужен для `navigator.geolocation`, который требует secure context
+- ✅ Веб-интерфейс туриста: `GET /`, `GET /api/status`, `POST /api/gps`, `POST /api/sos`
+- ✅ Pre-build patch для `fhessel/esp32_https_server` v1.0.0 (замена удалённого `<hwcrypto/sha.h>` на mbedtls)
+- ✅ Скрипт `gen_cert.sh` для генерации DER-сертификата (RSA-2048, 10 лет)
+- ✅ Атомарный `[TX]` лог с координатами (`@ 45.019741, 39.032218`), без межъядерного interleave-а
+- ⬜ Приём ACK и CHAT-сообщений (отложено до этапа 2 — нужна вторая сторона)
 
-### Этап 2 — lora-station (RPi5)
+Бюджет ресурсов после сборки: RAM 16.3 % (53 КБ из 327 КБ), Flash 17.1 % (1.1 МБ из 6.5 МБ).
+
+### Этап 2 — lora-station (RPi5) ⬅ СЛЕДУЮЩИЙ ШАГ
 Файлы: `services/lora-station/`
 - Python-демон: приём пакетов через SPI (pigpio / spidev)
-- Парсинг пакета → запись в SQLite
-- Ретрансляция: forwarding с TTL-1
+- Парсинг пакета через `mesh_packet.py` → запись в SQLite (`devices`, `pings`, `sos_events`)
+- Ретрансляция: forwarding с TTL-1, дедупликация по (device_id, sequence)
+- Тест связки: ESP32 → LoRa → RPi5 → SQLite (живые координаты с телефона должны долетать до базы)
 
 ### Этап 3 — relay-node + info-portal
 Файлы: `services/relay-node/`, `web/info-portal/`
@@ -259,11 +270,15 @@ sudo journalctl -u "mesh-*" -p err -f
 | `proto/messages.proto` | ✅ Заполнен (документация 64-байтного формата) |
 | `firmware/esp32-terminal/lib/mesh_packet/` | ✅ C++ кодек (MeshPacket.h + MeshPacket.cpp) |
 | `services/lora-station/mesh_packet.py` | ✅ Python кодек, тест пройден |
-| `firmware/esp32-terminal/platformio.ini` | ✅ RadioLib + пин-макросы + monitor_speed |
-| `firmware/esp32-terminal/src/main.cpp` | ⬜ Заглушка — нужно писать (Этап 1) |
+| `firmware/esp32-terminal/platformio.ini` | ✅ RadioLib + пин-макросы + HTTPS lib + pre-build patch |
+| `firmware/esp32-terminal/src/main.cpp` | ✅ LoRa + Wi-Fi AP + HTTPS + PING/SOS работает на железе |
+| `firmware/esp32-terminal/include/cert.h` | ✅ Self-signed TLS cert (DER, через `gen_cert.sh`) |
+| `firmware/esp32-terminal/scripts/` | ✅ `gen_cert.sh` + `patch_esp32_https_server.py` |
 | `scripts/db_init/init.sql` + `init.sh` | ✅ 4 таблицы + скрипт инициализации |
-| Python-сервисы (lora-station демон, rescue-api) | ⬜ Не написаны |
-| React-дашборд | ⬜ Не написан |
+| `services/lora-station/` (демон) | ⬜ Этап 2 — следующий шаг |
+| `services/relay-node/`, `web/info-portal/` | ⬜ Этап 3 |
+| `services/rescue-api/`, `services/gigachat-agent/`, `web/rescue-dashboard/` | ⬜ Этап 4 |
+| systemd-юниты, полевые тесты | ⬜ Этап 5 |
 
 ---
 
