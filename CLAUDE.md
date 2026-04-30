@@ -233,12 +233,18 @@ sudo journalctl -u "mesh-*" -p err -f
 
 Бюджет ресурсов после сборки: RAM 16.3 % (53 КБ из 327 КБ), Flash 17.1 % (1.1 МБ из 6.5 МБ).
 
-### Этап 2 — lora-station (RPi5) ⬅ СЛЕДУЮЩИЙ ШАГ
-Файлы: `services/lora-station/`
-- Python-демон: приём пакетов через SPI (pigpio / spidev)
-- Парсинг пакета через `mesh_packet.py` → запись в SQLite (`devices`, `pings`, `sos_events`)
-- Ретрансляция: forwarding с TTL-1, дедупликация по (device_id, sequence)
-- Тест связки: ESP32 → LoRa → RPi5 → SQLite (живые координаты с телефона должны долетать до базы)
+### Этап 2 — lora-station (RPi5) ⬅ КОД НАПИСАН, ЖДЁТ ПОЛЕВОГО ТЕСТА
+Файлы: `services/lora-station/lora_station/`
+- ✅ Python-демон, pure-Python драйвер SX1262 поверх `spidev` + `gpiozero` (на RPi5 Bookworm gpiozero сам берёт `lgpio` backend; `RPi.GPIO` несовместим с RP1)
+- ✅ `packet.py` — кодек 64-байтного пакета (перенесён из `services/lora-station/mesh_packet.py`)
+- ✅ `sx1262.py` — драйвер: reset, init (TCXO 1.8 В, DCDC, 868 МГц, SF10/BW125/CR4/5, sync PRIVATE, DIO2=RF switch), startReceive, readData (RSSI/SNR), transmit, IRQ через DIO1
+- ✅ `db.py` — SQLite-обёртка: upsert `devices`, insert `pings` / `sos_events` / `chat_messages`, потокобезопасно через RLock
+- ✅ `mesh.py` — DedupCache (TTL 30 с), TxQueue (приоритеты SOS=0 / ACK=1 / CHAT=2 / PING=3, SOS не дропается), make_forward (TTL−1)
+- ✅ `dispatcher.py` — decoded packet → БД + ретрансляция, эхо своих пакетов фильтруется по `NODE_DEVICE_ID`
+- ✅ `__main__.py` — argparse, главный цикл (wait_rx → read_rx → handle → tx_q.pop → transmit → start_receive), graceful shutdown по SIGINT/SIGTERM
+- ✅ `install.sh` + `requirements.txt` — venv, проверка SPI, проверка групп gpio/spi, инициализация БД
+- ⬜ Полевой тест: ESP32 → LoRa → RPi5 → SQLite (`SELECT * FROM pings`) — живые координаты с телефона долетают до базы
+- ⬜ После полевого теста — фиксы по итогам (тонкости таймингов SX1262, возможные правки регистров)
 
 ### Этап 3 — relay-node + info-portal
 Файлы: `services/relay-node/`, `web/info-portal/`
@@ -275,7 +281,7 @@ sudo journalctl -u "mesh-*" -p err -f
 | `firmware/esp32-terminal/include/cert.h` | ✅ Self-signed TLS cert (DER, через `gen_cert.sh`) |
 | `firmware/esp32-terminal/scripts/` | ✅ `gen_cert.sh` + `patch_esp32_https_server.py` |
 | `scripts/db_init/init.sql` + `init.sh` | ✅ 4 таблицы + скрипт инициализации |
-| `services/lora-station/` (демон) | ⬜ Этап 2 — следующий шаг |
+| `services/lora-station/` (демон) | ✅ Код написан (sx1262.py + db.py + mesh.py + dispatcher.py + __main__.py + install.sh), ⬜ полевой тест |
 | `services/relay-node/`, `web/info-portal/` | ⬜ Этап 3 |
 | `services/rescue-api/`, `services/gigachat-agent/`, `web/rescue-dashboard/` | ⬜ Этап 4 |
 | systemd-юниты, полевые тесты | ⬜ Этап 5 |

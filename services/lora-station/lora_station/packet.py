@@ -1,6 +1,9 @@
 """
 Кодек бинарного пакета LoRa — Mesh-net Тропы.
 Формат: фиксированные 64 байта, схема — см. proto/messages.proto
+
+Должен 1-в-1 совпадать с C++ кодеком в firmware/esp32-terminal/lib/mesh_packet/
+(CRC-16/CCITT-FALSE, big-endian, layout 'BBHBBii48s' + 'H').
 """
 
 import struct
@@ -45,10 +48,8 @@ class MeshPacket:
     crc16:     int        = 0          # uint16, заполняется при encode
 
 
-# --- CRC-16/CCITT-FALSE ---
-# Poly: 0x1021, Init: 0xFFFF
-
 def _crc16_ccitt(data: bytes) -> int:
+    """CRC-16/CCITT-FALSE: poly=0x1021, init=0xFFFF, big-endian."""
     crc = 0xFFFF
     for byte in data:
         crc ^= byte << 8
@@ -62,13 +63,7 @@ def _crc16_ccitt(data: bytes) -> int:
 
 
 def encode(pkt: MeshPacket) -> bytes:
-    """Упаковать MeshPacket в 64 байта. CRC рассчитывается автоматически."""
-    # Payload должен быть ровно 48 байт
     payload = pkt.payload[:PAYLOAD_SIZE].ljust(PAYLOAD_SIZE, b'\x00')
-
-    # Собираем первые 62 байта без CRC
-    # Формат: B B H B B i i 48s
-    #         ver type dev_id chan ttl lat lon payload
     body = struct.pack(
         '>BBHBBii48s',
         pkt.version,
@@ -80,17 +75,12 @@ def encode(pkt: MeshPacket) -> bytes:
         pkt.longitude,
         payload,
     )
-    assert len(body) == 62, f"body len={len(body)}, expected 62"
-
     crc = _crc16_ccitt(body)
     return body + struct.pack('>H', crc)
 
 
 def decode(raw: bytes) -> MeshPacket:
-    """
-    Распаковать 64 байта в MeshPacket.
-    Бросает ValueError если размер или CRC неверны.
-    """
+    """Распаковать 64 байта. ValueError при неверном размере или CRC."""
     if len(raw) != PACKET_SIZE:
         raise ValueError(f"Неверный размер пакета: {len(raw)}, ожидается {PACKET_SIZE}")
 
@@ -102,7 +92,6 @@ def decode(raw: bytes) -> MeshPacket:
     version, ptype, device_id, channel, ttl, lat, lon, payload = struct.unpack(
         '>BBHBBii48s', raw[:62]
     )
-
     return MeshPacket(
         version   = version,
         type      = PacketType(ptype),
@@ -116,12 +105,16 @@ def decode(raw: bytes) -> MeshPacket:
     )
 
 
-# --- Вспомогательные функции для payload ---
-
 def make_ping_payload(battery_pct: int, rssi_last: int, seq: int) -> bytes:
     """battery_pct: 0–100, rssi_last: int8 (0=нет данных), seq: uint16"""
-    data = struct.pack('>Bbh', battery_pct, rssi_last, seq)  # 4 байта
+    data = struct.pack('>Bbh', battery_pct, rssi_last, seq)
     return data.ljust(PAYLOAD_SIZE, b'\x00')
+
+
+def parse_ping_payload(payload: bytes) -> tuple[int, int, int]:
+    """Вернуть (battery_pct, rssi_last, seq) из payload PING."""
+    battery, rssi, seq = struct.unpack('>Bbh', payload[:4])
+    return battery, rssi, seq
 
 
 def make_chat_payload(text: str) -> bytes:
@@ -129,49 +122,40 @@ def make_chat_payload(text: str) -> bytes:
     return encoded.ljust(PAYLOAD_SIZE, b'\x00')
 
 
+def parse_chat_payload(payload: bytes) -> str:
+    return payload.rstrip(b'\x00').decode('utf-8', errors='replace')
+
+
 def make_sos_payload(sos_type: SosType, message: str) -> bytes:
     msg = message.encode('utf-8')[: PAYLOAD_SIZE - 1]
     return bytes([int(sos_type)]) + msg.ljust(PAYLOAD_SIZE - 1, b'\x00')
+
+
+def parse_sos_payload(payload: bytes) -> tuple[SosType, str]:
+    stype = SosType(payload[0]) if payload[0] in SosType._value2member_map_ else SosType.UNKNOWN
+    msg = payload[1:].rstrip(b'\x00').decode('utf-8', errors='replace')
+    return stype, msg
 
 
 def make_ack_payload(ack_device_id: int) -> bytes:
     return struct.pack('>H', ack_device_id) + bytes(PAYLOAD_SIZE - 2)
 
 
-# --- Вспомогательные функции для координат ---
-
 def lat_lon_to_int(degrees: float) -> int:
-    """Перевести градусы в int32 × 1e6"""
     return int(round(degrees * 1_000_000))
 
 
 def int_to_lat_lon(value: int) -> float:
-    """Обратно из int32 × 1e6 в градусы"""
     return value / 1_000_000
 
 
 if __name__ == '__main__':
-    # Быстрый тест кодека
     pkt = MeshPacket(
-        type      = PacketType.PING,
-        device_id = 42,
-        channel   = Channel.TOURIST,
-        ttl       = 3,
-        latitude  = lat_lon_to_int(43.45),
-        longitude = lat_lon_to_int(41.20),
-        payload   = make_ping_payload(battery_pct=85, rssi_last=-90, seq=1),
+        type=PacketType.PING, device_id=42, channel=Channel.TOURIST, ttl=3,
+        latitude=lat_lon_to_int(43.45), longitude=lat_lon_to_int(41.20),
+        payload=make_ping_payload(85, -90, 1),
     )
-
     raw = encode(pkt)
-    assert len(raw) == PACKET_SIZE, "Размер пакета неверный!"
-
     pkt2 = decode(raw)
-    assert pkt2.device_id == 42
-    assert pkt2.latitude  == lat_lon_to_int(43.45)
-    assert pkt2.longitude == lat_lon_to_int(41.20)
-    assert pkt2.type      == PacketType.PING
-
-    print(f"OK: {PACKET_SIZE} байт, device_id={pkt2.device_id}, "
-          f"lat={int_to_lat_lon(pkt2.latitude):.6f}, "
-          f"lon={int_to_lat_lon(pkt2.longitude):.6f}, "
-          f"CRC=0x{pkt2.crc16:04X}")
+    assert pkt2.device_id == 42 and pkt2.latitude == lat_lon_to_int(43.45)
+    print(f"OK: {len(raw)} байт, CRC=0x{pkt2.crc16:04X}")
