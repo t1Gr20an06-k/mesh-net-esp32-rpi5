@@ -15,6 +15,7 @@ C++ снифером (tests/field/lora-sniffer/main.cpp):
 RSSI/SNR. Datasheet: Semtech SX1261/2 v2.1.
 """
 
+import logging
 import threading
 import time
 from dataclasses import dataclass
@@ -22,6 +23,8 @@ from typing import Optional
 
 import spidev
 from gpiozero import DigitalInputDevice, DigitalOutputDevice
+
+log = logging.getLogger(__name__)
 
 # ---------------------------------------------------------------------------
 # Опкоды команд SX1262 (datasheet §13)
@@ -164,7 +167,12 @@ class SX1262:
 
     def _spi_xfer(self, data: list[int]) -> list[int]:
         with self._spi_lock:
-            return self._spi.xfer2(list(data))
+            rx = self._spi.xfer2(list(data))
+        if log.isEnabledFor(logging.DEBUG):
+            tx_hex = " ".join(f"{b:02X}" for b in data)
+            rx_hex = " ".join(f"{b:02X}" for b in rx)
+            log.debug("SPI tx=%s rx=%s", tx_hex, rx_hex)
+        return rx
 
     def _cmd(self, opcode: int, params: bytes = b'', read_len: int = 0) -> bytes:
         """
@@ -178,15 +186,25 @@ class SX1262:
         return bytes(rx[1 + len(params):]) if read_len else b''
 
     def _write_register(self, addr: int, value: int) -> None:
-        self._cmd(_CMD_WRITE_REGISTER,
-                  bytes([(addr >> 8) & 0xFF, addr & 0xFF, value & 0xFF]))
+        self._write_register_burst(addr, bytes([value & 0xFF]))
 
     def _read_register(self, addr: int) -> int:
-        # Layout: opcode 1D | addr_hi | addr_lo | NOP | <byte>
+        return self._read_register_burst(addr, 1)[0]
+
+    def _write_register_burst(self, addr: int, data: bytes) -> None:
+        """WriteRegister (0x0D) с N последовательных байт — как делает RadioLib."""
+        self._cmd(_CMD_WRITE_REGISTER,
+                  bytes([(addr >> 8) & 0xFF, addr & 0xFF]) + data)
+
+    def _read_register_burst(self, addr: int, n: int) -> bytes:
+        """
+        ReadRegister (0x1D): TX = opcode | addr_hi | addr_lo | NOP | NOP*n,
+        data приходит на байтах с 4-го (нумерация с 0).
+        """
         self._wait_busy_low()
-        rx = self._spi_xfer([_CMD_READ_REGISTER,
-                             (addr >> 8) & 0xFF, addr & 0xFF, 0x00, 0x00])
-        return rx[4]
+        tx = [_CMD_READ_REGISTER, (addr >> 8) & 0xFF, addr & 0xFF, 0x00] + [0x00] * n
+        rx = self._spi_xfer(tx)
+        return bytes(rx[4:4 + n])
 
     def _write_buffer(self, offset: int, data: bytes) -> None:
         self._cmd(_CMD_WRITE_BUFFER, bytes([offset & 0xFF]) + data)
@@ -308,15 +326,16 @@ class SX1262:
             0x00,         # IQ нормальный
         ]))
 
-        # 14) Sync word PRIVATE + read-back self-check
-        self._write_register(_REG_LORA_SYNC_WORD_MSB, _SYNC_WORD_PRIVATE_MSB)
-        self._write_register(_REG_LORA_SYNC_WORD_LSB, _SYNC_WORD_PRIVATE_LSB)
-        sw_msb = self._read_register(_REG_LORA_SYNC_WORD_MSB)
-        sw_lsb = self._read_register(_REG_LORA_SYNC_WORD_LSB)
-        if sw_msb != _SYNC_WORD_PRIVATE_MSB or sw_lsb != _SYNC_WORD_PRIVATE_LSB:
+        # 14) Sync word PRIVATE — burst-запись (как RadioLib), затем read-back
+        self._write_register_burst(
+            _REG_LORA_SYNC_WORD_MSB,
+            bytes([_SYNC_WORD_PRIVATE_MSB, _SYNC_WORD_PRIVATE_LSB]),
+        )
+        sw = self._read_register_burst(_REG_LORA_SYNC_WORD_MSB, 2)
+        if sw[0] != _SYNC_WORD_PRIVATE_MSB or sw[1] != _SYNC_WORD_PRIVATE_LSB:
             raise RuntimeError(
                 f"Sync word не записался: записали 0x{_SYNC_WORD_PRIVATE_MSB:02X}/"
-                f"0x{_SYNC_WORD_PRIVATE_LSB:02X}, прочитали 0x{sw_msb:02X}/0x{sw_lsb:02X}"
+                f"0x{_SYNC_WORD_PRIVATE_LSB:02X}, прочитали 0x{sw[0]:02X}/0x{sw[1]:02X}"
             )
 
         # 15) DIO2 как RF switch — модули HT-RA62 используют это для T/R-переключения
