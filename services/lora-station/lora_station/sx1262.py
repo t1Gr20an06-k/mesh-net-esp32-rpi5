@@ -22,7 +22,6 @@ from dataclasses import dataclass
 from typing import Optional
 
 import lgpio
-from gpiozero import DigitalInputDevice, DigitalOutputDevice
 
 log = logging.getLogger(__name__)
 
@@ -135,28 +134,34 @@ class SX1262:
         spi_speed_hz: int = 1_000_000,
         pins: Pins = Pins(),
     ):
-        # SPI через lgpio (libgpiod). На RPi5 (RP1) это рабочий путь —
-        # ровно как делает RadioLib PiHal в C++ снифере. Python-модуль
-        # `spidev` через legacy ioctl на RP1 не отрабатывает CS корректно.
-        # spi_flags = 0 → SPI mode 0 (CPOL=0, CPHA=0), LSB last.
+        # GPIO + SPI — всё через lgpio (libgpiod), как делает RadioLib PiHal.
+        # Это исключает конфликт между двумя бэкендами на одном gpiochip0.
+        self._chip = lgpio.gpiochip_open(0)
+        self._reset_gpio = pins.reset
+        self._busy_gpio  = pins.busy
+        self._dio1_gpio  = pins.dio1
+
+        # RESET — выход, неактивный (HIGH) по умолчанию.
+        lgpio.gpio_claim_output(self._chip, self._reset_gpio, 1)
+        # BUSY — обычный input.
+        lgpio.gpio_claim_input(self._chip, self._busy_gpio)
+        # DIO1 — input с обработчиком rising edge (наш IRQ от SX1262).
+        # gpio_claim_alert(chip, gpio, edge, lFlags) → отлавливает фронты
+        # без polling, а callback() регистрирует Python-функцию.
+        lgpio.gpio_claim_alert(self._chip, self._dio1_gpio, lgpio.RISING_EDGE)
+        self._dio1_cb = lgpio.callback(
+            self._chip, self._dio1_gpio, lgpio.RISING_EDGE, self._on_dio1_rising
+        )
+
+        # Событие "DIO1 поднялся" — IRQ от чипа (RxDone / TxDone / etc.)
+        self._irq_event = threading.Event()
+
+        # SPI через lgpio (тот же API, что и C++ PiHal).
         self._spi_handle = lgpio.spi_open(spi_bus, spi_dev, spi_speed_hz, 0)
         if self._spi_handle < 0:
             raise OSError(f"lgpio.spi_open вернул ошибку: {self._spi_handle}")
         log.debug("SPI открыт через lgpio: bus=%d dev=%d speed=%d handle=%d",
                   spi_bus, spi_dev, spi_speed_hz, self._spi_handle)
-
-        # GPIO. SX1262 BUSY и DIO1 — push-pull выходы чипа, поэтому
-        # внутренний pull-resistor RPi нам не нужен и даже вреден:
-        # gpiozero pull_up=False = pull-DOWN, а это может удерживать
-        # BUSY на LOW в моменты Hi-Z и ломать тайминги. Используем
-        # pull_up=None (нет pull) — нужно явно указать active_state.
-        self._reset_pin = DigitalOutputDevice(pins.reset, active_high=True, initial_value=True)
-        self._busy_pin  = DigitalInputDevice(pins.busy, pull_up=None, active_state=True)
-        self._dio1_pin  = DigitalInputDevice(pins.dio1, pull_up=None, active_state=True)
-
-        # Событие "DIO1 поднялся" — IRQ от чипа (RxDone / TxDone / etc.)
-        self._irq_event = threading.Event()
-        self._dio1_pin.when_activated = self._on_dio1_rising
 
         # SPI bus — внешне один, но обращаемся из главного потока + IRQ-callback;
         # на всякий случай защитим Lock'ом.
@@ -165,9 +170,12 @@ class SX1262:
     # ------------------------------------------------------------------
     # Низкий уровень: SPI + BUSY
     # ------------------------------------------------------------------
+    def _busy_value(self) -> int:
+        return lgpio.gpio_read(self._chip, self._busy_gpio)
+
     def _wait_busy_low(self, timeout_s: float = 1.0) -> None:
         t0 = time.monotonic()
-        while self._busy_pin.value == 1:
+        while self._busy_value() == 1:
             if time.monotonic() - t0 > timeout_s:
                 raise TimeoutError("SX1262 BUSY висит — нет ответа от чипа")
             time.sleep(0.0001)
@@ -229,9 +237,11 @@ class SX1262:
     # ------------------------------------------------------------------
     # IRQ
     # ------------------------------------------------------------------
-    def _on_dio1_rising(self) -> None:
-        # Вызывается потоком gpiozero. Никакого SPI здесь — только событие.
-        self._irq_event.set()
+    def _on_dio1_rising(self, chip, gpio, level, tick) -> None:  # noqa: ARG002
+        # Вызывается потоком lgpio при rising edge на DIO1.
+        # Никакого SPI здесь — только взвести event для главного цикла.
+        if level == 1:
+            self._irq_event.set()
 
     def _read_irq_status(self) -> int:
         # Layout: opcode 12 | NOP | <stat> | <stat>
@@ -256,15 +266,15 @@ class SX1262:
         после команды SetStandby. Поэтому делаем reset → 25 мс пауза →
         SetStandby(RC) → проверяем mode=2 (STDBY_RC), несколько попыток.
         """
-        self._reset_pin.on()
+        lgpio.gpio_write(self._chip, self._reset_gpio, 1)
         time.sleep(0.001)
-        log.debug("reset: BUSY перед reset = %d", self._busy_pin.value)
-        self._reset_pin.off()        # LOW — активный reset
-        time.sleep(0.010)            # держим 10 мс (datasheet min 100us)
-        log.debug("reset: BUSY во время LOW reset = %d", self._busy_pin.value)
-        self._reset_pin.on()         # release
-        time.sleep(0.025)            # дать кристаллу запуститься
-        log.debug("reset: BUSY после release = %d (ждём LOW)", self._busy_pin.value)
+        log.debug("reset: BUSY перед reset = %d", self._busy_value())
+        lgpio.gpio_write(self._chip, self._reset_gpio, 0)   # LOW — активный reset
+        time.sleep(0.010)
+        log.debug("reset: BUSY во время LOW reset = %d", self._busy_value())
+        lgpio.gpio_write(self._chip, self._reset_gpio, 1)   # release
+        time.sleep(0.025)
+        log.debug("reset: BUSY после release = %d (ждём LOW)", self._busy_value())
         self._wait_busy_low(timeout_s=2.0)
         log.debug("reset: BUSY стал LOW")
 
@@ -550,7 +560,18 @@ class SX1262:
     def close(self) -> None:
         try:
             lgpio.spi_close(self._spi_handle)
-        finally:
-            self._reset_pin.close()
-            self._busy_pin.close()
-            self._dio1_pin.close()
+        except Exception:  # noqa: BLE001
+            pass
+        try:
+            self._dio1_cb.cancel()
+        except Exception:  # noqa: BLE001
+            pass
+        for gp in (self._reset_gpio, self._busy_gpio, self._dio1_gpio):
+            try:
+                lgpio.gpio_free(self._chip, gp)
+            except Exception:  # noqa: BLE001
+                pass
+        try:
+            lgpio.gpiochip_close(self._chip)
+        except Exception:  # noqa: BLE001
+            pass
