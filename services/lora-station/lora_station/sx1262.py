@@ -132,7 +132,7 @@ class SX1262:
         self,
         spi_bus: int = 0,
         spi_dev: int = 0,
-        spi_speed_hz: int = 2_000_000,
+        spi_speed_hz: int = 1_000_000,
         pins: Pins = Pins(),
     ):
         # SPI
@@ -140,6 +140,9 @@ class SX1262:
         self._spi.open(spi_bus, spi_dev)
         self._spi.max_speed_hz = spi_speed_hz
         self._spi.mode = 0  # CPOL=0, CPHA=0
+        self._spi.bits_per_word = 8
+        self._spi.lsbfirst = False
+        # cshigh не трогаем — драйвер kernel сам инвертирует CS для SPI0.0
 
         # GPIO
         # active_high=False для RESET → значение True даёт LOW (сброс)
@@ -237,26 +240,40 @@ class SX1262:
     # Высокий уровень: init
     # ------------------------------------------------------------------
     def reset(self) -> None:
-        # RESET active LOW. После отпускания дать XTAL/TCXO стабилизироваться
-        # (RadioLib для SX126x с кварцем ждёт 25 мс), затем дождаться BUSY low.
+        """
+        Аппаратный сброс + перевод в STDBY_RC.
+
+        После reset SX126x проходит startup-sequence ~3.5 мс на внутреннем
+        RC-oscillator. Сразу после этого первый GET_STATUS может вернуть
+        мусор (mode=0 = UNUSED) — чип реально перейдёт в STDBY_RC только
+        после команды SetStandby. Поэтому делаем reset → 25 мс пауза →
+        SetStandby(RC) → проверяем mode=2 (STDBY_RC), несколько попыток.
+        """
         self._reset_pin.on()
         time.sleep(0.001)
         self._reset_pin.off()        # LOW — активный reset
-        time.sleep(0.005)            # держим 5 мс
+        time.sleep(0.005)
         self._reset_pin.on()         # release
-        time.sleep(0.025)             # XTAL/TCXO settle
+        time.sleep(0.025)            # дать кристаллу запуститься
         self._wait_busy_low(timeout_s=2.0)
-        # Проверяем, что чип реально вышел в STARTUP/STDBY:
-        # после reset SX126x должен быть в STDBY_RC (mode=2). Если 0 (UNUSED)
-        # или ничего — чип не отвечает.
-        time.sleep(0.001)
-        mode, _ = self.get_status()
-        if mode == 0:
-            raise RuntimeError(
-                "После reset чип не отвечает (chip_mode=0). "
-                "Проверь питание 3.3 В, проводку SPI и пин RESET."
-            )
-        log.debug("reset: chip_mode after reset = %d", mode)
+
+        last_mode = -1
+        for attempt in range(5):
+            self._cmd(_CMD_SET_STANDBY, bytes([_STDBY_RC]))
+            time.sleep(0.002)
+            self._wait_busy_low()
+            mode, cmd_st = self.get_status()
+            log.debug("reset attempt %d: chip_mode=%d cmd_st=%d",
+                      attempt + 1, mode, cmd_st)
+            if mode == 2:  # STDBY_RC — то, что нужно
+                return
+            last_mode = mode
+            time.sleep(0.020)
+
+        raise RuntimeError(
+            f"Чип не выходит в STDBY_RC после reset (chip_mode={last_mode}). "
+            "Проверь питание 3.3 В, проводку SPI/RESET, и что снифер не запущен."
+        )
 
     def begin(
         self,
@@ -273,10 +290,8 @@ class SX1262:
         if cr != 5:
             raise NotImplementedError("Сейчас поддерживаем только CR=4/5")
 
+        # reset() уже переводит чип в STDBY_RC и проверяет это.
         self.reset()
-
-        # 1) STDBY_RC, чтобы все настройки прошли
-        self._cmd(_CMD_SET_STANDBY, bytes([_STDBY_RC]))
 
         # 2) TCXO control. На HT-RA62 кварц через DIO3 = TCXO 1.8 В.
         if abs(tcxo_v - 1.8) > 0.01:
