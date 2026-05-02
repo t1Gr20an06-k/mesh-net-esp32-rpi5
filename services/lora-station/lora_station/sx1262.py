@@ -135,14 +135,13 @@ class SX1262:
         spi_speed_hz: int = 1_000_000,
         pins: Pins = Pins(),
     ):
-        # SPI
+        # SPI: минимум настроек, как делает RadioLib PiHal.
+        # Лишние присваивания (bits_per_word, lsbfirst) на RP1-драйвере
+        # RPi5 могут ломать xfer и приводить к "MISO эхоит MOSI".
         self._spi = spidev.SpiDev()
         self._spi.open(spi_bus, spi_dev)
         self._spi.max_speed_hz = spi_speed_hz
         self._spi.mode = 0  # CPOL=0, CPHA=0
-        self._spi.bits_per_word = 8
-        self._spi.lsbfirst = False
-        # cshigh не трогаем — драйвер kernel сам инвертирует CS для SPI0.0
 
         # GPIO. SX1262 BUSY и DIO1 — push-pull выходы чипа, поэтому
         # внутренний pull-resistor RPi нам не нужен и даже вреден:
