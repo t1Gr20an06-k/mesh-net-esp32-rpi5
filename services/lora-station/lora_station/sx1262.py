@@ -135,19 +135,20 @@ class SX1262:
         pins: Pins = Pins(),
     ):
         # GPIO + SPI — всё через lgpio (libgpiod), как делает RadioLib PiHal.
-        # Это исключает конфликт между двумя бэкендами на одном gpiochip0.
+        # ВАЖНО: на этой системе config.txt переназначил hardware CS0 на
+        # GPIO 27 через `dtoverlay=spi0-1cs,cs0_pin=27`, но HT-RA62 физически
+        # подключён к GPIO 8. Поэтому CS дёргаем сами через GPIO, а
+        # автоматический CS от kernel driver пусть свободно дёргает GPIO 27
+        # в пустоту — нам не мешает.
         self._chip = lgpio.gpiochip_open(0)
         self._reset_gpio = pins.reset
         self._busy_gpio  = pins.busy
         self._dio1_gpio  = pins.dio1
+        self._cs_gpio    = pins.cs
 
-        # RESET — выход, неактивный (HIGH) по умолчанию.
         lgpio.gpio_claim_output(self._chip, self._reset_gpio, 1)
-        # BUSY — обычный input.
+        lgpio.gpio_claim_output(self._chip, self._cs_gpio, 1)   # CS inactive (HIGH)
         lgpio.gpio_claim_input(self._chip, self._busy_gpio)
-        # DIO1 — input с обработчиком rising edge (наш IRQ от SX1262).
-        # gpio_claim_alert(chip, gpio, edge, lFlags) → отлавливает фронты
-        # без polling, а callback() регистрирует Python-функцию.
         lgpio.gpio_claim_alert(self._chip, self._dio1_gpio, lgpio.RISING_EDGE)
         self._dio1_cb = lgpio.callback(
             self._chip, self._dio1_gpio, lgpio.RISING_EDGE, self._on_dio1_rising
@@ -156,12 +157,14 @@ class SX1262:
         # Событие "DIO1 поднялся" — IRQ от чипа (RxDone / TxDone / etc.)
         self._irq_event = threading.Event()
 
-        # SPI через lgpio (тот же API, что и C++ PiHal).
+        # SPI через lgpio. Hardware-CS уйдёт на GPIO 27 (overlay), но мы его
+        # не используем — управляем CS вручную через GPIO 8 в _spi_xfer.
         self._spi_handle = lgpio.spi_open(spi_bus, spi_dev, spi_speed_hz, 0)
         if self._spi_handle < 0:
             raise OSError(f"lgpio.spi_open вернул ошибку: {self._spi_handle}")
-        log.debug("SPI открыт через lgpio: bus=%d dev=%d speed=%d handle=%d",
-                  spi_bus, spi_dev, spi_speed_hz, self._spi_handle)
+        log.debug("SPI открыт через lgpio: bus=%d dev=%d speed=%d handle=%d, "
+                  "ручной CS на GPIO %d",
+                  spi_bus, spi_dev, spi_speed_hz, self._spi_handle, self._cs_gpio)
 
         # SPI bus — внешне один, но обращаемся из главного потока + IRQ-callback;
         # на всякий случай защитим Lock'ом.
@@ -181,10 +184,14 @@ class SX1262:
             time.sleep(0.0001)
 
     def _spi_xfer(self, data: list[int]) -> list[int]:
-        # lgpio.spi_xfer — full-duplex обмен в одной CS-транзакции.
-        # Возвращает (count, rx_bytes); rx_bytes — bytearray.
+        # Ручной CS: LOW (active) → xfer → HIGH (inactive). Параллельно
+        # kernel дёргает hardware CS на GPIO 27 в пустоту, нам не мешает.
         with self._spi_lock:
-            count, rx = lgpio.spi_xfer(self._spi_handle, list(data))
+            lgpio.gpio_write(self._chip, self._cs_gpio, 0)
+            try:
+                count, rx = lgpio.spi_xfer(self._spi_handle, list(data))
+            finally:
+                lgpio.gpio_write(self._chip, self._cs_gpio, 1)
         rx_list = list(rx)
         if log.isEnabledFor(logging.DEBUG):
             tx_hex = " ".join(f"{b:02X}" for b in data)
@@ -566,7 +573,7 @@ class SX1262:
             self._dio1_cb.cancel()
         except Exception:  # noqa: BLE001
             pass
-        for gp in (self._reset_gpio, self._busy_gpio, self._dio1_gpio):
+        for gp in (self._reset_gpio, self._cs_gpio, self._busy_gpio, self._dio1_gpio):
             try:
                 lgpio.gpio_free(self._chip, gp)
             except Exception:  # noqa: BLE001
