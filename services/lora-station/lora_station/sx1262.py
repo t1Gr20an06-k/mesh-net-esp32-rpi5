@@ -237,12 +237,26 @@ class SX1262:
     # Высокий уровень: init
     # ------------------------------------------------------------------
     def reset(self) -> None:
-        # RESET active LOW: тянем вниз ~5 мс, потом вверх и ждём BUSY low.
-        self._reset_pin.off()
-        time.sleep(0.005)
+        # RESET active LOW. После отпускания дать XTAL/TCXO стабилизироваться
+        # (RadioLib для SX126x с кварцем ждёт 25 мс), затем дождаться BUSY low.
         self._reset_pin.on()
-        time.sleep(0.010)
+        time.sleep(0.001)
+        self._reset_pin.off()        # LOW — активный reset
+        time.sleep(0.005)            # держим 5 мс
+        self._reset_pin.on()         # release
+        time.sleep(0.025)             # XTAL/TCXO settle
         self._wait_busy_low(timeout_s=2.0)
+        # Проверяем, что чип реально вышел в STARTUP/STDBY:
+        # после reset SX126x должен быть в STDBY_RC (mode=2). Если 0 (UNUSED)
+        # или ничего — чип не отвечает.
+        time.sleep(0.001)
+        mode, _ = self.get_status()
+        if mode == 0:
+            raise RuntimeError(
+                "После reset чип не отвечает (chip_mode=0). "
+                "Проверь питание 3.3 В, проводку SPI и пин RESET."
+            )
+        log.debug("reset: chip_mode after reset = %d", mode)
 
     def begin(
         self,
