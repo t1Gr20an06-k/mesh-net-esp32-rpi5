@@ -21,7 +21,7 @@ import time
 from dataclasses import dataclass
 from typing import Optional
 
-import spidev
+import lgpio
 from gpiozero import DigitalInputDevice, DigitalOutputDevice
 
 log = logging.getLogger(__name__)
@@ -135,16 +135,15 @@ class SX1262:
         spi_speed_hz: int = 1_000_000,
         pins: Pins = Pins(),
     ):
-        # SPI: минимум настроек, как делает RadioLib PiHal.
-        # Лишние присваивания (bits_per_word, lsbfirst) на RP1-драйвере
-        # RPi5 могут ломать xfer и приводить к "MISO эхоит MOSI".
-        self._spi = spidev.SpiDev()
-        self._spi.open(spi_bus, spi_dev)
-        self._spi.max_speed_hz = spi_speed_hz
-        self._spi.mode = 0    # CPOL=0, CPHA=0
-        self._spi.cshigh = False   # CS активен LOW (SX126x требует именно так)
-        log.debug("SPI открыт: speed=%d mode=%d cshigh=%s",
-                  spi_speed_hz, self._spi.mode, self._spi.cshigh)
+        # SPI через lgpio (libgpiod). На RPi5 (RP1) это рабочий путь —
+        # ровно как делает RadioLib PiHal в C++ снифере. Python-модуль
+        # `spidev` через legacy ioctl на RP1 не отрабатывает CS корректно.
+        # spi_flags = 0 → SPI mode 0 (CPOL=0, CPHA=0), LSB last.
+        self._spi_handle = lgpio.spi_open(spi_bus, spi_dev, spi_speed_hz, 0)
+        if self._spi_handle < 0:
+            raise OSError(f"lgpio.spi_open вернул ошибку: {self._spi_handle}")
+        log.debug("SPI открыт через lgpio: bus=%d dev=%d speed=%d handle=%d",
+                  spi_bus, spi_dev, spi_speed_hz, self._spi_handle)
 
         # GPIO. SX1262 BUSY и DIO1 — push-pull выходы чипа, поэтому
         # внутренний pull-resistor RPi нам не нужен и даже вреден:
@@ -174,13 +173,16 @@ class SX1262:
             time.sleep(0.0001)
 
     def _spi_xfer(self, data: list[int]) -> list[int]:
+        # lgpio.spi_xfer — full-duplex обмен в одной CS-транзакции.
+        # Возвращает (count, rx_bytes); rx_bytes — bytearray.
         with self._spi_lock:
-            rx = self._spi.xfer2(list(data))
+            count, rx = lgpio.spi_xfer(self._spi_handle, list(data))
+        rx_list = list(rx)
         if log.isEnabledFor(logging.DEBUG):
             tx_hex = " ".join(f"{b:02X}" for b in data)
-            rx_hex = " ".join(f"{b:02X}" for b in rx)
+            rx_hex = " ".join(f"{b:02X}" for b in rx_list)
             log.debug("SPI tx=%s rx=%s", tx_hex, rx_hex)
-        return rx
+        return rx_list
 
     def _cmd(self, opcode: int, params: bytes = b'', read_len: int = 0) -> bytes:
         """
@@ -547,7 +549,7 @@ class SX1262:
     # ------------------------------------------------------------------
     def close(self) -> None:
         try:
-            self._spi.close()
+            lgpio.spi_close(self._spi_handle)
         finally:
             self._reset_pin.close()
             self._busy_pin.close()
