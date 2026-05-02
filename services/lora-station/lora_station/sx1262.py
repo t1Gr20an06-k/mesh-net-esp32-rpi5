@@ -141,7 +141,10 @@ class SX1262:
         self._spi = spidev.SpiDev()
         self._spi.open(spi_bus, spi_dev)
         self._spi.max_speed_hz = spi_speed_hz
-        self._spi.mode = 0  # CPOL=0, CPHA=0
+        self._spi.mode = 0    # CPOL=0, CPHA=0
+        self._spi.cshigh = False   # CS активен LOW (SX126x требует именно так)
+        log.debug("SPI открыт: speed=%d mode=%d cshigh=%s",
+                  spi_speed_hz, self._spi.mode, self._spi.cshigh)
 
         # GPIO. SX1262 BUSY и DIO1 — push-pull выходы чипа, поэтому
         # внутренний pull-resistor RPi нам не нужен и даже вреден:
