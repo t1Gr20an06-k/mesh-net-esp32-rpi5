@@ -144,11 +144,14 @@ class SX1262:
         self._spi.lsbfirst = False
         # cshigh не трогаем — драйвер kernel сам инвертирует CS для SPI0.0
 
-        # GPIO
-        # active_high=False для RESET → значение True даёт LOW (сброс)
+        # GPIO. SX1262 BUSY и DIO1 — push-pull выходы чипа, поэтому
+        # внутренний pull-resistor RPi нам не нужен и даже вреден:
+        # gpiozero pull_up=False = pull-DOWN, а это может удерживать
+        # BUSY на LOW в моменты Hi-Z и ломать тайминги. Используем
+        # pull_up=None (нет pull) — нужно явно указать active_state.
         self._reset_pin = DigitalOutputDevice(pins.reset, active_high=True, initial_value=True)
-        self._busy_pin  = DigitalInputDevice(pins.busy, pull_up=False)
-        self._dio1_pin  = DigitalInputDevice(pins.dio1, pull_up=False)
+        self._busy_pin  = DigitalInputDevice(pins.busy, pull_up=None, active_state=True)
+        self._dio1_pin  = DigitalInputDevice(pins.dio1, pull_up=None, active_state=True)
 
         # Событие "DIO1 поднялся" — IRQ от чипа (RxDone / TxDone / etc.)
         self._irq_event = threading.Event()
@@ -251,11 +254,15 @@ class SX1262:
         """
         self._reset_pin.on()
         time.sleep(0.001)
+        log.debug("reset: BUSY перед reset = %d", self._busy_pin.value)
         self._reset_pin.off()        # LOW — активный reset
-        time.sleep(0.005)
+        time.sleep(0.010)            # держим 10 мс (datasheet min 100us)
+        log.debug("reset: BUSY во время LOW reset = %d", self._busy_pin.value)
         self._reset_pin.on()         # release
         time.sleep(0.025)            # дать кристаллу запуститься
+        log.debug("reset: BUSY после release = %d (ждём LOW)", self._busy_pin.value)
         self._wait_busy_low(timeout_s=2.0)
+        log.debug("reset: BUSY стал LOW")
 
         last_mode = -1
         for attempt in range(5):
