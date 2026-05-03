@@ -1,0 +1,136 @@
+15:17:13 DEBUG   lora_station.sx1262: SPI tx=02 03 FF rx=D4 D4 D4
+15:17:13 DEBUG   lora_station.sx1262: SPI tx=13 00 00 00 rx=D4 D4 40 00
+15:17:13 DEBUG   lora_station.sx1262: SPI tx=1E 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 rx=D4 D4 D4 01 02 00 01 00 03 02 AB 62 C3 02 54 36 5C 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 B6 A8
+15:17:13 DEBUG   lora_station.sx1262: SPI tx=14 00 00 00 00 rx=D4 D4 52 23 52
+15:17:13 DEBUG   lora_station.sx1262: SPI tx=02 03 FF rx=D4 D4 D4
+15:17:13 DEBUG   lora_station.sx1262: SPI tx=82 FF FF FF rx=D4 D4 D4 D4
+15:17:13 INFO    lora_station: [RX#1] SOS dev=1 ttl=3 ch=0 lat=44786371 lon=39073372  RSSI=-41 дБм SNR=8 дБ
+15:17:13 DEBUG   lora_station.sx1262: SPI tx=12 00 00 00 rx=D2 D2 00 00
+15:17:13 DEBUG   lora_station.sx1262: SPI tx=12 00 00 00 rx=D2 D2 00 00
+15:17:13 DEBUG   lora_station.sx1262: SPI tx=12 00 00 00 rx=D2 D2 00 00
+15:17:13 DEBUG   lora_station.sx1262: SPI tx=12 00 00 00 rx=D2 D2 00 00
+15:17:13 DEBUG   lora_station.sx1262: SPI tx=12 00 00 00 rx=D2 D2 00 00
+15:17:14 DEBUG   lora_station.sx1262: SPI tx=12 00 00 00 rx=D2 D2 00 00
+15:17:14 DEBUG   lora_station.sx1262: SPI tx=12 00 00 00 rx=D2 D2 00 00
+15:17:14 DEBUG   lora_station.sx1262: SPI tx=12 00 00 00 rx=D2 D2 00 00
+15:17:14 DEBUG   lora_station.sx1262: SPI tx=12 00 00 00 rx=D2 D2 00 00
+15:17:14 DEBUG   lora_station.sx1262: SPI tx=12 00 00 00 rx=D2 D2 00 00
+15:17:14 DEBUG   lora_station.sx1262: SPI tx=12 00 00 00 rx=D2 D2 00 00
+15:17:14 DEBUG   lora_station.sx1262: SPI tx=12 00 00 00 rx=D2 D2 00 00
+15:17:14 DEBUG   lora_station.sx1262: SPI tx=12 00 00 00 rx=D2 D2 00 00
+15:17:14 DEBUG   lora_station.sx1262: SPI tx=12 00 00 00 rx=D2 D2 00 00
+15:17:14 DEBUG   lora_station.sx1262: SPI tx=12 00 00 00 rx=D4 D4 00 02
+15:17:14 DEBUG   lora_station.sx1262: SPI tx=02 03 FF rx=D4 D4 D4
+15:17:14 DEBUG   lora_station.sx1262: SPI tx=13 00 00 00 rx=D4 D4 40 40
+15:17:14 DEBUG   lora_station.sx1262: SPI tx=1E 40 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 rx=D4 D4 D4 01 02 00 01 00 03 02 AB 62 C3 02 54 36 5C 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 B6 A8
+15:17:14 DEBUG   lora_station.sx1262: SPI tx=14 00 00 00 00 rx=D4 D4 52 21 52
+15:17:14 DEBUG   lora_station.sx1262: SPI tx=02 03 FF rx=D4 D4 D4
+15:17:14 DEBUG   lora_station.sx1262: SPI tx=82 FF FF FF rx=D4 D4 D4 D4
+15:17:14 INFO    lora_station: [RX#2] SOS dev=1 ttl=3 ch=0 lat=44786371 lon=39073372  RSSI=-41 дБм SNR=8 дБ
+15:17:14 DEBUG   lora_station.sx1262: SPI tx=12 00 00 00 rx=D2 D2 00 00
+15:17:14 DEBUG   lora_station.sx1262: SPI tx=12 00 00 00 rx=D2 D2 00 00
+15:17:14 DEBUG   lora_station.sx1262: SPI tx=12 00 00 00 rx=D2 D2 00 00
+15:17:14 DEBUG   lora_station.sx1262: SPI tx=12 00 00 00 rx=D2 D2 00 00
+15:17:14 DEBUG   lora_station.sx1262: SPI tx=12 00 00 00 rx=D2 D2 00 00
+15:17:14 DEBUG   lora_station.sx1262: SPI tx=12 00 00 00 rx=D2 D2 00 00
+15:17:14 DEBUG   lora_station.sx1262: SPI tx=12 00 00 00 rx=D2 D2 00 00
+15:17:14 DEBUG   lora_station.sx1262: SPI tx=12 00 00 00 rx=D2 D2 00 00
+15:17:14 DEBUG   lora_station.sx1262: SPI tx=12 00 00 00 rx=D2 D2 00 00
+15:17:14 DEBUG   lora_station.sx1262: SPI tx=12 00 00 00 rx=D2 D2 00 00
+15:17:14 DEBUG   lora_station.sx1262: SPI tx=12 00 00 00 rx=D2 D2 00 00
+15:17:15 DEBUG   lora_station.sx1262: SPI tx=12 00 00 00 rx=D2 D2 00 00
+15:17:15 DEBUG   lora_station.sx1262: SPI tx=12 00 00 00 rx=D2 D2 00 00
+15:17:15 DEBUG   lora_station.sx1262: SPI tx=12 00 00 00 rx=D2 D2 00 00
+15:17:15 DEBUG   lora_station.sx1262: SPI tx=12 00 00 00 rx=D4 D4 00 02
+15:17:15 DEBUG   lora_station.sx1262: SPI tx=02 03 FF rx=D4 D4 D4
+15:17:15 DEBUG   lora_station.sx1262: SPI tx=13 00 00 00 rx=D4 D4 40 80
+15:17:15 DEBUG   lora_station.sx1262: SPI tx=1E 80 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 rx=D4 D4 D4 01 02 00 01 00 03 02 AB 62 C3 02 54 36 5C 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 B6 A8
+15:17:15 DEBUG   lora_station.sx1262: SPI tx=14 00 00 00 00 rx=D4 D4 52 24 54
+15:17:15 DEBUG   lora_station.sx1262: SPI tx=02 03 FF rx=D4 D4 D4
+15:17:15 DEBUG   lora_station.sx1262: SPI tx=82 FF FF FF rx=D4 D4 D4 D4
+15:17:15 INFO    lora_station: [RX#3] SOS dev=1 ttl=3 ch=0 lat=44786371 lon=39073372  RSSI=-41 дБм SNR=9 дБ
+15:17:15 DEBUG   lora_station.sx1262: SPI tx=12 00 00 00 rx=D2 D2 00 00
+15:17:15 DEBUG   lora_station.sx1262: SPI tx=12 00 00 00 rx=D2 D2 00 00
+15:17:15 DEBUG   lora_station.sx1262: SPI tx=12 00 00 00 rx=D2 D2 00 00
+15:17:15 DEBUG   lora_station.sx1262: SPI tx=12 00 00 00 rx=D2 D2 00 00
+15:17:15 DEBUG   lora_station.sx1262: SPI tx=C0 00 rx=D2 52
+15:17:15 DEBUG   lora_station.sx1262: SPI tx=12 00 00 00 rx=D2 D2 00 00
+15:17:15 DEBUG   lora_station.sx1262: SPI tx=17 00 00 00 rx=D2 D2 00 00
+15:17:15 DEBUG   lora_station: [diag] chip=RX cmd_st=1 irq=0x0000 errs=0x0000
+15:17:15 DEBUG   lora_station.sx1262: SPI tx=12 00 00 00 rx=D2 D2 00 00
+15:17:15 DEBUG   lora_station.sx1262: SPI tx=12 00 00 00 rx=D2 D2 00 00
+15:17:15 DEBUG   lora_station.sx1262: SPI tx=12 00 00 00 rx=D2 D2 00 00
+15:17:15 DEBUG   lora_station.sx1262: SPI tx=12 00 00 00 rx=D2 D2 00 00
+15:17:15 DEBUG   lora_station.sx1262: SPI tx=12 00 00 00 rx=D2 D2 00 00
+15:17:15 DEBUG   lora_station.sx1262: SPI tx=12 00 00 00 rx=D2 D2 00 00
+15:17:15 DEBUG   lora_station.sx1262: SPI tx=12 00 00 00 rx=D2 D2 00 00
+15:17:15 DEBUG   lora_station.sx1262: SPI tx=12 00 00 00 rx=D2 D2 00 00
+15:17:15 DEBUG   lora_station.sx1262: SPI tx=12 00 00 00 rx=D2 D2 00 00
+15:17:15 DEBUG   lora_station.sx1262: SPI tx=12 00 00 00 rx=D2 D2 00 00
+15:17:15 DEBUG   lora_station.sx1262: SPI tx=12 00 00 00 rx=D4 D4 00 02
+15:17:15 DEBUG   lora_station.sx1262: SPI tx=02 03 FF rx=D4 D4 D4
+15:17:15 DEBUG   lora_station.sx1262: SPI tx=13 00 00 00 rx=D4 D4 40 C0
+15:17:15 DEBUG   lora_station.sx1262: SPI tx=1E C0 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 rx=D4 D4 D4 01 00 00 01 00 03 02 AB 62 C3 02 54 36 5C 64 00 00 0B 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 83 50
+15:17:15 DEBUG   lora_station.sx1262: SPI tx=14 00 00 00 00 rx=D4 D4 52 24 52
+15:17:15 DEBUG   lora_station.sx1262: SPI tx=02 03 FF rx=D4 D4 D4
+15:17:15 DEBUG   lora_station.sx1262: SPI tx=82 FF FF FF rx=D4 D4 D4 D4
+15:17:15 INFO    lora_station: [RX#4] PING dev=1 ttl=3 ch=0 lat=44786371 lon=39073372  RSSI=-41 дБм SNR=9 дБ
+15:17:15 DEBUG   lora_station.sx1262: SPI tx=12 00 00 00 rx=D2 D2 00 00
+15:17:15 DEBUG   lora_station.sx1262: SPI tx=12 00 00 00 rx=D2 D2 00 00
+15:17:16 DEBUG   lora_station.sx1262: SPI tx=12 00 00 00 rx=D2 D2 00 00
+15:17:16 DEBUG   lora_station.sx1262: SPI tx=12 00 00 00 rx=D2 D2 00 00
+15:17:16 DEBUG   lora_station.sx1262: SPI tx=12 00 00 00 rx=D2 D2 00 00
+15:17:16 DEBUG   lora_station.sx1262: SPI tx=12 00 00 00 rx=D2 D2 00 00
+15:17:16 DEBUG   lora_station.sx1262: SPI tx=12 00 00 00 rx=D2 D2 00 00
+15:17:16 DEBUG   lora_station.sx1262: SPI tx=12 00 00 00 rx=D2 D2 00 00
+15:17:16 DEBUG   lora_station.sx1262: SPI tx=12 00 00 00 rx=D2 D2 00 00
+15:17:16 DEBUG   lora_station.sx1262: SPI tx=12 00 00 00 rx=D2 D2 00 00
+15:17:16 DEBUG   lora_station.sx1262: SPI tx=12 00 00 00 rx=D2 D2 00 00
+15:17:16 DEBUG   lora_station.sx1262: SPI tx=12 00 00 00 rx=D2 D2 00 00
+15:17:16 DEBUG   lora_station.sx1262: SPI tx=12 00 00 00 rx=D2 D2 00 00
+15:17:16 DEBUG   lora_station.sx1262: SPI tx=12 00 00 00 rx=D2 D2 00 00
+15:17:16 DEBUG   lora_station.sx1262: SPI tx=12 00 00 00 rx=D2 D2 00 00
+15:17:16 DEBUG   lora_station.sx1262: SPI tx=12 00 00 00 rx=D2 D2 00 00
+15:17:16 DEBUG   lora_station.sx1262: SPI tx=12 00 00 00 rx=D2 D2 00 00
+15:17:16 DEBUG   lora_station.sx1262: SPI tx=12 00 00 00 rx=D2 D2 00 00
+15:17:16 DEBUG   lora_station.sx1262: SPI tx=12 00 00 00 rx=D2 D2 00 00
+15:17:16 DEBUG   lora_station.sx1262: SPI tx=12 00 00 00 rx=D2 D2 00 00
+15:17:16 DEBUG   lora_station.sx1262: SPI tx=12 00 00 00 rx=D2 D2 00 00
+15:17:16 DEBUG   lora_station.sx1262: SPI tx=12 00 00 00 rx=D2 D2 00 00
+15:17:17 DEBUG   lora_station.sx1262: SPI tx=12 00 00 00 rx=D2 D2 00 00
+15:17:17 DEBUG   lora_station.sx1262: SPI tx=12 00 00 00 rx=D2 D2 00 00
+15:17:17 DEBUG   lora_station.sx1262: SPI tx=12 00 00 00 rx=D2 D2 00 00
+15:17:17 DEBUG   lora_station.sx1262: SPI tx=12 00 00 00 rx=D2 D2 00 00
+15:17:17 DEBUG   lora_station.sx1262: SPI tx=12 00 00 00 rx=D2 D2 00 00
+15:17:17 DEBUG   lora_station.sx1262: SPI tx=12 00 00 00 rx=D2 D2 00 00
+15:17:17 DEBUG   lora_station.sx1262: SPI tx=12 00 00 00 rx=D2 D2 00 00
+15:17:17 DEBUG   lora_station.sx1262: SPI tx=12 00 00 00 rx=D2 D2 00 00
+15:17:17 DEBUG   lora_station.sx1262: SPI tx=12 00 00 00 rx=D2 D2 00 00
+15:17:17 DEBUG   lora_station.sx1262: SPI tx=12 00 00 00 rx=D2 D2 00 00
+15:17:17 DEBUG   lora_station.sx1262: SPI tx=12 00 00 00 rx=D2 D2 00 00
+15:17:17 DEBUG   lora_station.sx1262: SPI tx=12 00 00 00 rx=D2 D2 00 00
+15:17:17 DEBUG   lora_station.sx1262: SPI tx=12 00 00 00 rx=D2 D2 00 00
+15:17:17 DEBUG   lora_station.sx1262: SPI tx=12 00 00 00 rx=D2 D2 00 00
+15:17:17 DEBUG   lora_station.sx1262: SPI tx=12 00 00 00 rx=D2 D2 00 00
+15:17:17 DEBUG   lora_station.sx1262: SPI tx=12 00 00 00 rx=D2 D2 00 00
+15:17:17 DEBUG   lora_station.sx1262: SPI tx=12 00 00 00 rx=D2 D2 00 00
+15:17:17 DEBUG   lora_station.sx1262: SPI tx=12 00 00 00 rx=D2 D2 00 00
+15:17:17 DEBUG   lora_station.sx1262: SPI tx=12 00 00 00 rx=D2 D2 00 00
+15:17:17 DEBUG   lora_station.sx1262: SPI tx=12 00 00 00 rx=D2 D2 00 00
+15:17:18 DEBUG   lora_station.sx1262: SPI tx=12 00 00 00 rx=D2 D2 00 00
+15:17:18 DEBUG   lora_station.sx1262: SPI tx=12 00 00 00 rx=D2 D2 00 00
+15:17:18 DEBUG   lora_station.sx1262: SPI tx=12 00 00 00 rx=D2 D2 00 00
+15:17:18 DEBUG   lora_station.sx1262: SPI tx=12 00 00 00 rx=D2 D2 00 00
+15:17:18 DEBUG   lora_station.sx1262: SPI tx=12 00 00 00 rx=D2 D2 00 00
+15:17:18 DEBUG   lora_station.sx1262: SPI tx=12 00 00 00 rx=D2 D2 00 00
+15:17:18 DEBUG   lora_station.sx1262: SPI tx=12 00 00 00 rx=D2 D2 00 00
+15:17:18 DEBUG   lora_station.sx1262: SPI tx=12 00 00 00 rx=D2 D2 00 00
+15:17:18 DEBUG   lora_station.sx1262: SPI tx=12 00 00 00 rx=D2 D2 00 00
+15:17:18 DEBUG   lora_station.sx1262: SPI tx=12 00 00 00 rx=D2 D2 00 00
+15:17:18 DEBUG   lora_station.sx1262: SPI tx=12 00 00 00 rx=D2 D2 00 00
+15:17:18 DEBUG   lora_station.sx1262: SPI tx=12 00 00 00 rx=D2 D2 00 00
+15:17:18 DEBUG   lora_station.sx1262: SPI tx=12 00 00 00 rx=D2 D2 00 00
+^C15:17:18 INFO    lora_station: Сигнал 2 — корректное завершение
+15:17:18 DEBUG   lora_station.sx1262: SPI tx=12 00 00 00 rx=D2 D2 00 00
+15:17:18 INFO    lora_station: Принято: 4 пакетов, ошибок CRC/декода: 0
+15:17:18 INFO    lora_station: lora-station остановлен

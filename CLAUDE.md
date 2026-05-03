@@ -233,18 +233,18 @@ sudo journalctl -u "mesh-*" -p err -f
 
 Бюджет ресурсов после сборки: RAM 16.3 % (53 КБ из 327 КБ), Flash 17.1 % (1.1 МБ из 6.5 МБ).
 
-### Этап 2 — lora-station (RPi5) ⬅ КОД НАПИСАН, ЖДЁТ ПОЛЕВОГО ТЕСТА
+### Этап 2 — lora-station (RPi5) ✅ ВЫПОЛНЕН
 Файлы: `services/lora-station/lora_station/`
-- ✅ Python-демон, pure-Python драйвер SX1262 поверх `spidev` + `gpiozero` (на RPi5 Bookworm gpiozero сам берёт `lgpio` backend; `RPi.GPIO` несовместим с RP1)
+- ✅ Python-демон, pure-Python драйвер SX1262 поверх `lgpio` (libgpiod v2): GPIO + SPI одним handle через `lgpio.spi_*`. На RPi5 RP1 это самый стабильный путь: `RPi.GPIO` несовместим, `spidev` глючит с hardware-CS
 - ✅ `packet.py` — кодек 64-байтного пакета (перенесён из `services/lora-station/mesh_packet.py`)
-- ✅ `sx1262.py` — драйвер: reset, init (TCXO 1.8 В, DCDC, 868 МГц, SF10/BW125/CR4/5, sync PRIVATE, DIO2=RF switch), startReceive, readData (RSSI/SNR), transmit, IRQ через DIO1
+- ✅ `sx1262.py` — драйвер: reset, init (TCXO 1.8 В, DCDC, 868 МГц, SF10/BW125/CR4/5, sync PRIVATE, DIO2=RF switch), startReceive, readData (RSSI/SNR), transmit, IRQ через DIO1 + SPI-fallback
 - ✅ `db.py` — SQLite-обёртка: upsert `devices`, insert `pings` / `sos_events` / `chat_messages`, потокобезопасно через RLock
 - ✅ `mesh.py` — DedupCache (TTL 30 с), TxQueue (приоритеты SOS=0 / ACK=1 / CHAT=2 / PING=3, SOS не дропается), make_forward (TTL−1)
 - ✅ `dispatcher.py` — decoded packet → БД + ретрансляция, эхо своих пакетов фильтруется по `NODE_DEVICE_ID`
 - ✅ `__main__.py` — argparse, главный цикл (wait_rx → read_rx → handle → tx_q.pop → transmit → start_receive), graceful shutdown по SIGINT/SIGTERM
-- ✅ `install.sh` + `requirements.txt` — venv, проверка SPI, проверка групп gpio/spi, инициализация БД
-- ⬜ Полевой тест: ESP32 → LoRa → RPi5 → SQLite (`SELECT * FROM pings`) — живые координаты с телефона долетают до базы
-- ⬜ После полевого теста — фиксы по итогам (тонкости таймингов SX1262, возможные правки регистров)
+- ✅ `install.sh` + `requirements.txt` — apt-пакеты + venv с `--system-site-packages` (lgpio через apt, не pip), проверка SPI, проверка групп gpio/spi, инициализация БД
+- ✅ Полевой тест пройден: SOS (3 пакета) и PING долетают от ESP32 до RPi5 за ~1 сек, RSSI=-41 дБм, SNR=8-9 дБ, CRC=0 ошибок (см. `firmware/esp32-terminal/logs`)
+- ⚠ Костыль: на этой плате `dtoverlay=spi0-1cs,cs0_pin=27` отправил kernel-CS на GPIO 27, поэтому CS на HT-RA62 (GPIO 8) дёргаем сами через `lgpio.gpio_write` в `_spi_xfer` — подробнее в `services/lora-station/CLAUDE.md`
 
 ### Этап 3 — relay-node + info-portal
 Файлы: `services/relay-node/`, `web/info-portal/`
@@ -281,7 +281,7 @@ sudo journalctl -u "mesh-*" -p err -f
 | `firmware/esp32-terminal/include/cert.h` | ✅ Self-signed TLS cert (DER, через `gen_cert.sh`) |
 | `firmware/esp32-terminal/scripts/` | ✅ `gen_cert.sh` + `patch_esp32_https_server.py` |
 | `scripts/db_init/init.sql` + `init.sh` | ✅ 4 таблицы + скрипт инициализации |
-| `services/lora-station/` (демон) | ✅ Код написан (sx1262.py + db.py + mesh.py + dispatcher.py + __main__.py + install.sh), ⬜ полевой тест |
+| `services/lora-station/` (демон) | ✅ Полевой тест пройден на железе (SOS + PING от ESP32 → RPi5 → SQLite) |
 | `services/relay-node/`, `web/info-portal/` | ⬜ Этап 3 |
 | `services/rescue-api/`, `services/gigachat-agent/`, `web/rescue-dashboard/` | ⬜ Этап 4 |
 | systemd-юниты, полевые тесты | ⬜ Этап 5 |

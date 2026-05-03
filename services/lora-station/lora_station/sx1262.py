@@ -1,18 +1,23 @@
 """
 Драйвер SX1262 (Semtech) для модуля HT-RA62 на Raspberry Pi 5.
 
-Pure-Python поверх:
-  * spidev      — SPI обмен с чипом (/dev/spidev0.0)
-  * gpiozero    — RESET / BUSY / DIO1 (на RPi5 gpiozero сам подхватит lgpio)
+Pure-Python поверх единственной зависимости — `lgpio` (libgpiod v2):
+GPIO (RESET / BUSY / DIO1 / CS) и SPI идут одним handle через `lgpio.spi_*`.
+Так делает RadioLib PiHal в C++; на RPi5 RP1 это самый стабильный путь —
+`RPi.GPIO` несовместим с RP1, а `spidev` иногда тупит с hardware-CS.
 
 Параметры радио должны 1-в-1 совпадать с прошивкой ESP32 и проверенным
 C++ снифером (tests/field/lora-sniffer/main.cpp):
     868 МГц, SF=10, BW=125 кГц, CR=4/5, preamble=8, TX power=14 дБм,
     TCXO=1.8 В, sync word=PRIVATE, CRC=2, DIO2 как RF-switch.
 
-Драйвер не претендует на полноту RadioLib — реализуем ровно то, что
-нужно для непрерывного RX, передачи 64-байтных пакетов и чтения
-RSSI/SNR. Datasheet: Semtech SX1261/2 v2.1.
+Реализуем ровно то, что нужно для непрерывного RX, передачи 64-байтных
+пакетов и чтения RSSI/SNR. Datasheet: Semtech SX1261/2 v2.1.
+
+ВАЖНО про CS: на этой плате `/boot/firmware/config.txt` содержит
+`dtoverlay=spi0-1cs,cs0_pin=27` — kernel hardware-CS уехал на GPIO 27,
+а HT-RA62 физически на GPIO 8. Поэтому CS дёргаем сами через GPIO в
+`_spi_xfer`, а kernel-CS на 27 пусть свободно бьёт в пустоту — не мешает.
 """
 
 import logging
@@ -113,7 +118,7 @@ class RxResult:
 @dataclass
 class Pins:
     """BCM-номера GPIO. Defaults — те же, что и в C++ снифере."""
-    cs:     int = 8       # SPI0 CE0 — управляется ядром, но spidev умеет manual
+    cs:     int = 8       # CS дёргаем сами через lgpio (см. _spi_xfer)
     reset:  int = 22
     dio1:   int = 23
     busy:   int = 24
@@ -135,11 +140,6 @@ class SX1262:
         pins: Pins = Pins(),
     ):
         # GPIO + SPI — всё через lgpio (libgpiod), как делает RadioLib PiHal.
-        # ВАЖНО: на этой системе config.txt переназначил hardware CS0 на
-        # GPIO 27 через `dtoverlay=spi0-1cs,cs0_pin=27`, но HT-RA62 физически
-        # подключён к GPIO 8. Поэтому CS дёргаем сами через GPIO, а
-        # автоматический CS от kernel driver пусть свободно дёргает GPIO 27
-        # в пустоту — нам не мешает.
         self._chip = lgpio.gpiochip_open(0)
         self._reset_gpio = pins.reset
         self._busy_gpio  = pins.busy
@@ -157,17 +157,13 @@ class SX1262:
         # Событие "DIO1 поднялся" — IRQ от чипа (RxDone / TxDone / etc.)
         self._irq_event = threading.Event()
 
-        # SPI через lgpio. Hardware-CS уйдёт на GPIO 27 (overlay), но мы его
-        # не используем — управляем CS вручную через GPIO 8 в _spi_xfer.
         self._spi_handle = lgpio.spi_open(spi_bus, spi_dev, spi_speed_hz, 0)
         if self._spi_handle < 0:
             raise OSError(f"lgpio.spi_open вернул ошибку: {self._spi_handle}")
-        log.debug("SPI открыт через lgpio: bus=%d dev=%d speed=%d handle=%d, "
-                  "ручной CS на GPIO %d",
-                  spi_bus, spi_dev, spi_speed_hz, self._spi_handle, self._cs_gpio)
 
-        # SPI bus — внешне один, но обращаемся из главного потока + IRQ-callback;
-        # на всякий случай защитим Lock'ом.
+        # SPI используется только из главного потока (callback DIO1 ничего
+        # не отправляет, только взводит event), но Lock не лишний — на случай
+        # будущих горячих путей вроде запросов из rescue-api.
         self._spi_lock = threading.Lock()
 
     # ------------------------------------------------------------------
@@ -185,19 +181,15 @@ class SX1262:
 
     def _spi_xfer(self, data: list[int]) -> list[int]:
         # Ручной CS: LOW (active) → xfer → HIGH (inactive). Параллельно
-        # kernel дёргает hardware CS на GPIO 27 в пустоту, нам не мешает.
+        # kernel дёргает hardware CS на GPIO 27 в пустоту (см. модульный
+        # docstring выше) — нам не мешает.
         with self._spi_lock:
             lgpio.gpio_write(self._chip, self._cs_gpio, 0)
             try:
-                count, rx = lgpio.spi_xfer(self._spi_handle, list(data))
+                _, rx = lgpio.spi_xfer(self._spi_handle, list(data))
             finally:
                 lgpio.gpio_write(self._chip, self._cs_gpio, 1)
-        rx_list = list(rx)
-        if log.isEnabledFor(logging.DEBUG):
-            tx_hex = " ".join(f"{b:02X}" for b in data)
-            rx_hex = " ".join(f"{b:02X}" for b in rx_list)
-            log.debug("SPI tx=%s rx=%s", tx_hex, rx_hex)
-        return rx_list
+        return list(rx)
 
     def _cmd(self, opcode: int, params: bytes = b'', read_len: int = 0) -> bytes:
         """
@@ -270,36 +262,33 @@ class SX1262:
         После reset SX126x проходит startup-sequence ~3.5 мс на внутреннем
         RC-oscillator. Сразу после этого первый GET_STATUS может вернуть
         мусор (mode=0 = UNUSED) — чип реально перейдёт в STDBY_RC только
-        после команды SetStandby. Поэтому делаем reset → 25 мс пауза →
-        SetStandby(RC) → проверяем mode=2 (STDBY_RC), несколько попыток.
+        после команды SetStandby. Поэтому: reset → 25 мс пауза →
+        SetStandby(RC) → проверяем mode=2 (STDBY_RC), до 5 попыток.
         """
         lgpio.gpio_write(self._chip, self._reset_gpio, 1)
         time.sleep(0.001)
-        log.debug("reset: BUSY перед reset = %d", self._busy_value())
         lgpio.gpio_write(self._chip, self._reset_gpio, 0)   # LOW — активный reset
         time.sleep(0.010)
-        log.debug("reset: BUSY во время LOW reset = %d", self._busy_value())
         lgpio.gpio_write(self._chip, self._reset_gpio, 1)   # release
         time.sleep(0.025)
-        log.debug("reset: BUSY после release = %d (ждём LOW)", self._busy_value())
         self._wait_busy_low(timeout_s=2.0)
-        log.debug("reset: BUSY стал LOW")
 
-        last_mode = -1
-        for attempt in range(5):
+        attempts: list[tuple[int, int]] = []
+        for _ in range(5):
             self._cmd(_CMD_SET_STANDBY, bytes([_STDBY_RC]))
             time.sleep(0.002)
             self._wait_busy_low()
             mode, cmd_st = self.get_status()
-            log.debug("reset attempt %d: chip_mode=%d cmd_st=%d",
-                      attempt + 1, mode, cmd_st)
+            attempts.append((mode, cmd_st))
             if mode == 2:  # STDBY_RC — то, что нужно
                 return
-            last_mode = mode
             time.sleep(0.020)
 
+        # Все попытки провалились — высыпаем диагностику.
+        log.error("reset: не удалось перевести чип в STDBY_RC, попытки: %s",
+                  ", ".join(f"mode={m} cmd_st={c}" for m, c in attempts))
         raise RuntimeError(
-            f"Чип не выходит в STDBY_RC после reset (chip_mode={last_mode}). "
+            f"Чип не выходит в STDBY_RC после reset (last chip_mode={attempts[-1][0]}). "
             "Проверь питание 3.3 В, проводку SPI/RESET, и что снифер не запущен."
         )
 
@@ -437,23 +426,24 @@ class SX1262:
         """
         Ждать готовности RX. Возвращает True если IRQ обнаружено.
 
-        Опрашиваем DIO1 через gpiozero (быстрый путь) И параллельно
-        периодически читаем IRQ-регистр через SPI (fallback). На RPi5
-        gpiozero+lgpio иногда не ловит rising edge от SX1262 — polling
-        SPI это компенсирует, ценой ~5–20 мкс SPI-обмена раз в 50 мс.
+        Главный путь: lgpio.callback на rising edge DIO1 → threading.Event.
+        Параллельно — fallback-poll IRQ-регистра через SPI каждые 50 мс:
+        на RPi5 RP1 callback на DIO1 иногда залипает (был случай в отладке
+        этапа 2), а ~20 SPI-чтений в секунду стоят копейки.
+        Передавай poll_irq=False, если хочешь чистое ожидание callback'а.
         """
         if not poll_irq:
             return self._irq_event.wait(timeout=timeout_s)
 
         deadline = None if timeout_s is None else (time.monotonic() + timeout_s)
         while True:
-            # Быстрый путь: callback от gpiozero уже взвёл event.
+            # Быстрый путь: callback DIO1 уже взвёл event.
             wait_left = poll_interval_s
             if deadline is not None:
                 wait_left = min(wait_left, max(0.0, deadline - time.monotonic()))
             if self._irq_event.wait(timeout=wait_left):
                 return True
-            # SPI-polling: чип реально что-то поймал?
+            # Fallback: спросим у чипа сами.
             irq = self._read_irq_status()
             if irq & (IRQ_RX_DONE | IRQ_TX_DONE | IRQ_TIMEOUT |
                       IRQ_CRC_ERROR | IRQ_HEADER_ERROR):
