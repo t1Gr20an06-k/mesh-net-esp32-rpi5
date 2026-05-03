@@ -127,26 +127,29 @@ def main() -> int:
     rx_count = 0
     crc_bad  = 0
 
-    # Диагностика: раз в 5 секунд печатаем состояние чипа.
+    # Watchdog-диагностика: раз в 5 сек проверяем что чип всё ещё в RX
+    # и нет ошибок. В норме — молчим. На аномалии — WARNING (виден всегда,
+    # не только в -v). Полезно: если чип молча выпадет из RX (например,
+    # после ESD или сбоя SPI), эфир будет игнорироваться без явной ошибки.
     last_diag_t = 0.0
     DIAG_INTERVAL_S = 5.0
     _MODE_NAMES = {2: "STBY_RC", 3: "STBY_XOSC", 4: "FS", 5: "RX", 6: "TX"}
+    _CHIP_MODE_RX = 5
 
     try:
         while not stopped:
-            if args.verbose:
-                now = time.monotonic()
-                if now - last_diag_t >= DIAG_INTERVAL_S:
-                    last_diag_t = now
-                    try:
-                        mode, cmd_st = radio.get_status()
-                        irq_raw = radio.get_irq_raw()
-                        errs = radio.get_device_errors()
-                        log.debug("[diag] chip=%s cmd_st=%d irq=0x%04X errs=0x%04X",
-                                  _MODE_NAMES.get(mode, f"?{mode}"),
-                                  cmd_st, irq_raw, errs)
-                    except Exception as exc:  # noqa: BLE001
-                        log.debug("[diag] FAIL: %s", exc)
+            now = time.monotonic()
+            if now - last_diag_t >= DIAG_INTERVAL_S:
+                last_diag_t = now
+                try:
+                    mode, cmd_st = radio.get_status()
+                    errs = radio.get_device_errors()
+                    if mode != _CHIP_MODE_RX or errs != 0:
+                        log.warning("[diag] АНОМАЛИЯ: chip=%s cmd_st=%d errs=0x%04X "
+                                    "(ожидалось chip=RX errs=0x0000)",
+                                    _MODE_NAMES.get(mode, f"?{mode}"), cmd_st, errs)
+                except Exception as exc:  # noqa: BLE001
+                    log.warning("[diag] FAIL: %s", exc)
             # Ждём IRQ ≤ 200 мс, чтобы регулярно проверять TX-очередь.
             got_irq = radio.wait_rx(timeout_s=0.2)
 
