@@ -1,0 +1,43 @@
+### ============================================================================
+### Mesh-net Тропы — systemd-юнит для rescue-api (FastAPI + uvicorn)
+### ============================================================================
+### Это ШАБЛОН. Не копировать в /etc/systemd/system/ напрямую — внутри есть
+### плейсхолдеры __USER__ и __REPO__, их подставит scripts/systemd/install.sh:
+###   sudo bash scripts/systemd/install.sh
+### ============================================================================
+
+[Unit]
+Description=Mesh-net Тропы — rescue-api (REST + WebSocket on RPi5)
+Documentation=file://__REPO__/services/rescue-api/CLAUDE.md
+# Зависимость от lora-station: rescue-api без БД работать не будет, а БД
+# создаётся при первом старте lora-station-install.sh. Если lora-station
+# упадёт — rescue-api продолжит работать (БД на диске никуда не делась),
+# поэтому Wants/Requires не используем, только After.
+After=network.target mesh-lora-station.service
+StartLimitIntervalSec=60
+StartLimitBurst=5
+
+[Service]
+Type=simple
+User=__USER__
+Group=__USER__
+
+WorkingDirectory=__REPO__/services/rescue-api
+ExecStart=__REPO__/services/rescue-api/.venv/bin/python -m rescue_api
+
+Restart=on-failure
+RestartSec=5
+
+StandardOutput=journal
+StandardError=journal
+
+# Параметры. Меняй здесь, потом systemctl daemon-reload && restart.
+Environment="DB_PATH=/var/lib/mesh-net/mesh.db"
+Environment="RESCUE_API_HOST=0.0.0.0"
+Environment="RESCUE_API_PORT=8000"
+Environment="LOG_LEVEL=INFO"
+# CORS открыт для разработки (дашборд ходит с другого порта). На прод сузить.
+Environment="ALLOW_CORS=1"
+
+[Install]
+WantedBy=multi-user.target
