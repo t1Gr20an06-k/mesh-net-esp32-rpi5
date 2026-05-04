@@ -1,0 +1,45 @@
+### ============================================================================
+### Mesh-net Тропы — systemd-юнит для lora-station
+### ============================================================================
+### Это ШАБЛОН. Не копировать в /etc/systemd/system/ напрямую — внутри есть
+### плейсхолдеры __USER__ и __REPO__, их подставит scripts/systemd/install.sh
+###   sudo bash scripts/systemd/install.sh
+### ============================================================================
+
+[Unit]
+Description=Mesh-net Тропы — LoRa station (RX/TX/dispatch on RPi5)
+Documentation=file://__REPO__/services/lora-station/CLAUDE.md
+After=network.target
+StartLimitIntervalSec=60
+StartLimitBurst=5
+
+[Service]
+Type=simple
+User=__USER__
+Group=__USER__
+# доступ к /dev/spidev0.0 и /dev/gpiochip*
+SupplementaryGroups=spi gpio
+
+WorkingDirectory=__REPO__/services/lora-station
+ExecStart=__REPO__/services/lora-station/.venv/bin/python -m lora_station
+
+# Если процесс упал — перезапускаем (но не чаще 5 раз за минуту, см. [Unit])
+Restart=on-failure
+RestartSec=5
+
+# Логи уходят в journalctl
+StandardOutput=journal
+StandardError=journal
+
+# Параметры демона. Меняй здесь, потом systemctl daemon-reload && restart.
+Environment="DB_PATH=/var/lib/mesh-net/mesh.db"
+Environment="NODE_DEVICE_ID=0x0001"
+# Если переразвёл пины — раскомментируй нужное:
+# Environment="LORA_SPI_BUS=0"
+# Environment="LORA_SPI_CS=8"
+# Environment="LORA_RESET_PIN=22"
+# Environment="LORA_DIO1_PIN=23"
+# Environment="LORA_BUSY_PIN=24"
+
+[Install]
+WantedBy=multi-user.target

@@ -1,158 +1,257 @@
-# База данных
+# База данных Mesh-net Тропы
 
 SQLite 3, файл: `/var/lib/mesh-net/mesh.db`
+Источник правды для схемы: [`scripts/db_init/init.sql`](../scripts/db_init/init.sql)
 
-Инициализация: `bash scripts/db_init/init.sh`
-
----
-
-## Схема
-
-```sql
--- Зарегистрированные устройства
-CREATE TABLE devices (
-    device_id    INTEGER PRIMARY KEY,          -- 0x0001 – 0xFFFF
-    name         TEXT NOT NULL DEFAULT '',     -- "Иванов П." / "Инфо-точка Архыз"
-    type         TEXT NOT NULL                 -- 'tourist' | 'rescue' | 'relay'
-                 CHECK(type IN ('tourist','rescue','relay')),
-    registered   INTEGER NOT NULL              -- unix timestamp
-);
-
--- GPS-треки (каждый PING/SOS пишет запись)
-CREATE TABLE tracks (
-    id           INTEGER PRIMARY KEY AUTOINCREMENT,
-    device_id    INTEGER NOT NULL REFERENCES devices(device_id),
-    lat          REAL    NOT NULL,
-    lon          REAL    NOT NULL,
-    ts           INTEGER NOT NULL,             -- unix timestamp (из пакета)
-    received_ts  INTEGER NOT NULL,             -- unix timestamp (когда получен на базе)
-    rssi         INTEGER,                      -- dBm
-    snr          REAL,                         -- dB
-    packet_type  TEXT DEFAULT 'PING'
-);
-CREATE INDEX idx_tracks_device_ts ON tracks(device_id, ts DESC);
-
--- SOS-события
-CREATE TABLE sos_events (
-    id           INTEGER PRIMARY KEY AUTOINCREMENT,
-    device_id    INTEGER NOT NULL REFERENCES devices(device_id),
-    lat          REAL    NOT NULL,
-    lon          REAL    NOT NULL,
-    ts           INTEGER NOT NULL,
-    received_ts  INTEGER NOT NULL,
-    payload      TEXT    DEFAULT '',           -- текст из пакета (причина, если указана)
-    acknowledged INTEGER NOT NULL DEFAULT 0,  -- 0=активный, 1=подтверждён
-    ack_ts       INTEGER,
-    ack_by       INTEGER                       -- device_id спасателя, который подтвердил
-);
-CREATE INDEX idx_sos_active ON sos_events(acknowledged, ts DESC);
-
--- Сообщения чата
-CREATE TABLE messages (
-    id           INTEGER PRIMARY KEY AUTOINCREMENT,
-    device_id    INTEGER NOT NULL,
-    channel      INTEGER NOT NULL DEFAULT 0,   -- 0=tourist, 1=rescue
-    payload      TEXT    NOT NULL,
-    ts           INTEGER NOT NULL
-);
-CREATE INDEX idx_messages_ts ON messages(ts DESC);
-
--- Кэш дедупликации (очищается при рестарте lora-station)
-CREATE TABLE dedup_cache (
-    packet_hash  TEXT PRIMARY KEY,             -- sha1(device_id || timestamp)
-    received_ts  INTEGER NOT NULL
-);
+Инициализация (один раз после клонирования репо):
+```bash
+bash scripts/db_init/init.sh
 ```
 
+WAL-режим включён → одновременно с файлом `.db` живут `mesh.db-wal` и
+`mesh.db-shm`. Это нормально, копировать их вместе при бэкапе.
+
 ---
 
-## Основные запросы
+## Схема (4 таблицы)
 
-### Активные туристы (PING за последние 10 минут)
+| Таблица         | Что хранит                          | Можно чистить? |
+|-----------------|-------------------------------------|----------------|
+| `devices`       | реестр всех увиденных устройств     | да (пересоздаст себя) |
+| `pings`         | PING-пакеты с координатами          | да, по дате |
+| `sos_events`    | SOS-события (acked / resolved)      | **НЕТ** — только архивировать |
+| `chat_messages` | текстовые сообщения CHAT            | да, по дате |
+
+Координаты везде хранятся как `INTEGER` × 1e6 (из пакета). Чтобы получить
+градусы — делить на 1 000 000:
 
 ```sql
-SELECT d.device_id, d.name, t.lat, t.lon, t.ts, t.rssi
+SELECT device_id, latitude / 1000000.0 AS lat, longitude / 1000000.0 AS lon FROM pings;
+```
+
+Полный текст схемы — в `scripts/db_init/init.sql`.
+
+---
+
+## Чтение данных
+
+Перед командами **остановить демон** не обязательно — SQLite в WAL-режиме
+позволяет читать параллельно с записью.
+
+### Интерактивная сессия
+
+```bash
+sqlite3 /var/lib/mesh-net/mesh.db
+sqlite> .mode column
+sqlite> .headers on
+sqlite> .tables
+sqlite> SELECT * FROM pings ORDER BY id DESC LIMIT 10;
+sqlite> .quit
+```
+
+### Однострочные команды
+
+```bash
+# Последние 10 PING-ов
+sqlite3 -header -column /var/lib/mesh-net/mesh.db \
+  'SELECT id, device_id, latitude/1000000.0 AS lat, longitude/1000000.0 AS lon,
+          battery_pct, seq, receiver_rssi, received_at
+   FROM pings ORDER BY id DESC LIMIT 10;'
+
+# Все известные устройства
+sqlite3 -header -column /var/lib/mesh-net/mesh.db 'SELECT * FROM devices;'
+
+# Активные SOS (не подтверждённые)
+sqlite3 -header -column /var/lib/mesh-net/mesh.db \
+  'SELECT id, device_id, latitude/1000000.0 AS lat, longitude/1000000.0 AS lon,
+          sos_type, message, received_at
+   FROM sos_events WHERE acked = 0 ORDER BY received_at DESC;'
+
+# Счётчики по таблицам
+sqlite3 /var/lib/mesh-net/mesh.db \
+  'SELECT "pings", COUNT(*) FROM pings
+   UNION ALL SELECT "sos", COUNT(*) FROM sos_events
+   UNION ALL SELECT "chat", COUNT(*) FROM chat_messages
+   UNION ALL SELECT "devices", COUNT(*) FROM devices;'
+```
+
+### Полезные SQL-запросы
+
+```sql
+-- Активные туристы — последний пакет от каждого за последние 10 минут
+SELECT d.device_id, d.name,
+       p.latitude/1000000.0 AS lat, p.longitude/1000000.0 AS lon,
+       p.received_at, p.receiver_rssi
 FROM devices d
-JOIN tracks t ON t.id = (
-    SELECT id FROM tracks
-    WHERE device_id = d.device_id
-    ORDER BY ts DESC LIMIT 1
+JOIN pings p ON p.id = (
+    SELECT id FROM pings WHERE device_id = d.device_id
+    ORDER BY id DESC LIMIT 1
 )
-WHERE d.type = 'tourist'
-  AND t.ts > strftime('%s','now') - 600
-ORDER BY t.ts DESC;
-```
+WHERE p.received_at > datetime('now', '-10 minutes')
+ORDER BY p.received_at DESC;
 
-### Активные SOS
+-- Трек одного устройства за последний час
+SELECT latitude/1000000.0 AS lat, longitude/1000000.0 AS lon, received_at
+FROM pings
+WHERE device_id = 16  -- 0x0010
+  AND received_at > datetime('now', '-1 hour')
+ORDER BY id ASC;
 
-```sql
-SELECT s.id, d.name, s.lat, s.lon, s.ts, s.payload,
-       (strftime('%s','now') - s.ts) / 60 AS minutes_ago
-FROM sos_events s
-JOIN devices d ON d.device_id = s.device_id
-WHERE s.acknowledged = 0
-ORDER BY s.ts DESC;
-```
-
-### Трек устройства за последние N часов
-
-```sql
-SELECT lat, lon, ts FROM tracks
-WHERE device_id = :device_id
-  AND ts > strftime('%s','now') - :hours * 3600
-ORDER BY ts ASC;
-```
-
-### Статистика маршрута
-
-```sql
-SELECT
-    (SELECT COUNT(DISTINCT device_id) FROM tracks
-     WHERE ts > strftime('%s','now') - 600) AS active_tourists,
-    (SELECT COUNT(*) FROM sos_events WHERE acknowledged = 0) AS active_sos,
-    (SELECT COUNT(*) FROM tracks
-     WHERE ts > strftime('%s','now') - 3600) AS pings_last_hour,
-    (SELECT MAX(ts) FROM tracks) AS last_ping_ts;
+-- Сколько пакетов в час за сегодня
+SELECT strftime('%H', received_at) AS hour, COUNT(*) AS pings
+FROM pings WHERE date(received_at) = date('now')
+GROUP BY hour ORDER BY hour;
 ```
 
 ---
 
-## Обслуживание
+## Экспорт в текстовые файлы
 
-### Архивирование старых треков (> 30 дней)
+### CSV (Excel/Numbers)
+
+```bash
+sqlite3 -header -csv /var/lib/mesh-net/mesh.db 'SELECT * FROM pings'         > /tmp/pings.csv
+sqlite3 -header -csv /var/lib/mesh-net/mesh.db 'SELECT * FROM devices'       > /tmp/devices.csv
+sqlite3 -header -csv /var/lib/mesh-net/mesh.db 'SELECT * FROM sos_events'    > /tmp/sos.csv
+sqlite3 -header -csv /var/lib/mesh-net/mesh.db 'SELECT * FROM chat_messages' > /tmp/chat.csv
+```
+
+### Полный SQL-дамп (можно потом импортировать обратно)
+
+```bash
+sqlite3 /var/lib/mesh-net/mesh.db .dump > /tmp/mesh-dump.sql
+```
+
+Восстановить из дампа в новый файл:
+```bash
+sqlite3 /tmp/restored.db < /tmp/mesh-dump.sql
+```
+
+### Читаемая таблица (txt)
+
+```bash
+sqlite3 -header -column /var/lib/mesh-net/mesh.db \
+  'SELECT * FROM pings ORDER BY id DESC' > /tmp/pings.txt
+```
+
+### Markdown (для отчётов)
+
+```bash
+sqlite3 -markdown /var/lib/mesh-net/mesh.db \
+  'SELECT id, device_id, received_at, receiver_rssi FROM pings ORDER BY id DESC LIMIT 20'
+```
+
+---
+
+## Очистка данных
+
+⚠ **Перед очисткой остановить демон** (`Ctrl-C` или `sudo systemctl stop mesh-lora-station`),
+иначе он держит файл открытым.
+
+⚠ **`sos_events` в боевом режиме не удаляем** — только архивируем. Юридически
+данные о ЧС могут понадобиться. На этапе разработки чистить можно.
+
+### Только PING-и (devices и SOS оставить)
+
+```bash
+sqlite3 /var/lib/mesh-net/mesh.db <<'SQL'
+DELETE FROM pings;
+DELETE FROM sqlite_sequence WHERE name = 'pings';   -- сброс AUTOINCREMENT
+VACUUM;                                             -- сожмёт файл
+SQL
+```
+
+### Все данные, схему оставить (для тестов)
+
+```bash
+sqlite3 /var/lib/mesh-net/mesh.db <<'SQL'
+DELETE FROM pings;
+DELETE FROM sos_events;
+DELETE FROM chat_messages;
+DELETE FROM devices;
+DELETE FROM sqlite_sequence;
+VACUUM;
+SQL
+```
+
+### Старые PING-и (> N дней)
 
 ```bash
 sqlite3 /var/lib/mesh-net/mesh.db \
-  "INSERT INTO tracks_archive SELECT * FROM tracks WHERE ts < strftime('%s','now') - 2592000;
-   DELETE FROM tracks WHERE ts < strftime('%s','now') - 2592000;"
+  "DELETE FROM pings WHERE received_at < datetime('now', '-30 days'); VACUUM;"
 ```
 
-### Очистка кэша дедупликации
+### Снести БД целиком и пересоздать
 
 ```bash
-sqlite3 /var/lib/mesh-net/mesh.db \
-  "DELETE FROM dedup_cache WHERE received_ts < strftime('%s','now') - 3600;"
+sudo rm /var/lib/mesh-net/mesh.db /var/lib/mesh-net/mesh.db-wal /var/lib/mesh-net/mesh.db-shm
+bash scripts/db_init/init.sh
 ```
 
-### Бэкап
+---
+
+## Бэкап
+
+### Безопасный бэкап на работающей БД (online backup)
 
 ```bash
 sqlite3 /var/lib/mesh-net/mesh.db ".backup /var/lib/mesh-net/backup-$(date +%Y%m%d).db"
 ```
 
-Рекомендуется запускать через cron ежедневно.
+Это правильный способ на живой базе — SQLite берёт консистентный снимок,
+не блокируя писателей надолго. Не путать с `cp` (может скопировать
+несогласованное состояние, если идёт запись).
+
+### Архивный SQL-дамп (txt, переносится между версиями SQLite)
+
+```bash
+sqlite3 /var/lib/mesh-net/mesh.db .dump | gzip > /var/lib/mesh-net/backup-$(date +%Y%m%d).sql.gz
+```
+
+### Бэкап по расписанию
+
+Например, ежедневный cron на пользователе с правами на каталог:
+```cron
+0 3 * * * sqlite3 /var/lib/mesh-net/mesh.db ".backup /var/lib/mesh-net/backup-$(date +\%Y\%m\%d).db"
+```
+
+---
+
+## Логи демона vs данные
+
+Это разные вещи:
+
+| | Где | Как читать |
+|---|---|---|
+| **Данные** (PING/SOS/CHAT/devices) | `/var/lib/mesh-net/mesh.db` | команды выше |
+| **Логи демона** (`[RX#1] PING ...`) | stdout / journalctl | см. ниже |
+
+Когда демон запущен из терминала — логи никуда не сохраняются, пропадают
+при закрытии shell. Сохранить в файл:
+```bash
+python -m lora_station -v 2>&1 | tee /var/log/lora-station.log
+```
+
+Когда демон поднят через systemd-юнит (этап 5) — логи автоматически
+уходят в journal:
+```bash
+sudo journalctl -u mesh-lora-station -f                   # live tail
+sudo journalctl -u mesh-lora-station --since today        # за сегодня
+sudo journalctl -u mesh-lora-station -p warning           # только WARNING+ERROR
+sudo journalctl -u mesh-lora-station --since "1 hour ago" # за последний час
+```
 
 ---
 
 ## Миграции
 
-Нумерованные файлы в `scripts/db_init/`:
-- `init.sql` — начальная схема
-- `migrate_001.sql` — и т.д.
+При изменении схемы — добавлять нумерованный файл в `scripts/db_init/`,
+например `migrate_001.sql`, и применять вручную:
 
-Скрипт применения:
 ```bash
-bash scripts/db_init/migrate.sh
+sqlite3 /var/lib/mesh-net/mesh.db < scripts/db_init/migrate_001.sql
 ```
 
-Текущая версия схемы хранится в `PRAGMA user_version`.
+Скрипта `migrate.sh` пока нет — будет когда понадобится первая миграция.
+Текущая версия схемы — `PRAGMA user_version` (сейчас не используется,
+но зарезервировано).

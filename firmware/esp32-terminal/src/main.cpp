@@ -34,7 +34,7 @@
 using namespace httpsserver;
 
 // --- Настройки этого терминала ---------------------------------------------
-static const uint16_t DEVICE_ID        = 1;                // ID туриста
+static const uint16_t DEVICE_ID        = 0x0010;           // ID туриста (база=0x0001, инфо-точка=0x0100, туристы=0x00xx)
 static const Channel  DEVICE_CHANNEL   = Channel::TOURIST; // канал
 static const uint32_t PING_INTERVAL_MS = 10000;            // раз в 10 сек
 
