@@ -1,0 +1,52 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Mesh-net Тропы — База спасателей</title>
+    <link rel="stylesheet" href="/lib/leaflet.css">
+    <link rel="stylesheet" href="/style.css">
+</head>
+<body>
+    <header>
+        <h1>Mesh-net Тропы — База спасателей</h1>
+        <div id="status">
+            <span id="ws-status" class="status-offline">WS: offline</span>
+            <span id="stats-line"></span>
+        </div>
+    </header>
+
+    <main>
+        <aside id="sidebar">
+            <section>
+                <h2>SOS-инциденты <span id="sos-count" class="badge badge-red">0</span></h2>
+                <ul id="sos-list" class="list">
+                    <li class="empty">пусто</li>
+                </ul>
+            </section>
+            <section>
+                <h2>Туристы в эфире <span id="tourists-count" class="badge">0</span></h2>
+                <ul id="tourists-list" class="list">
+                    <li class="empty">загрузка…</li>
+                </ul>
+            </section>
+        </aside>
+
+        <div id="map"></div>
+
+        <aside id="chat-panel">
+            <h2>ИИ-диспетчер</h2>
+            <div class="chat-placeholder">
+                Будет на следующем этапе.<br><br>
+                Здесь оператор сможет задавать вопросы по обстановке
+                («сколько активных туристов?», «у кого батарея &lt; 20%?»,
+                «покажи трек устройства 0x0001 за час») —
+                ИИ ответит, читая БД через rescue-api.
+            </div>
+        </aside>
+    </main>
+
+    <script src="/lib/leaflet.js"></script>
+    <script src="/app.js"></script>
+</body>
+</html>

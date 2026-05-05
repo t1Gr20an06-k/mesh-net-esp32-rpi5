@@ -13,9 +13,11 @@ sqlite3-вызовы там event loop не блокируют. WebSocket — as
 import logging
 import os
 from contextlib import asynccontextmanager
+from pathlib import Path
 
 from fastapi import FastAPI, HTTPException, Query, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.staticfiles import StaticFiles
 
 from . import db, models
 from .ws import Broadcaster
@@ -24,6 +26,16 @@ log = logging.getLogger("rescue_api")
 
 DB_PATH    = os.environ.get("DB_PATH", db.DEFAULT_DB_PATH)
 ALLOW_CORS = os.environ.get("ALLOW_CORS", "1") not in ("0", "false", "")
+
+# Путь до статики дашборда: services/rescue-api/rescue_api/app.py → подняться 3 раза → web/rescue-dashboard
+DASHBOARD_DIR = Path(
+    os.environ.get("DASHBOARD_DIR")
+    or (Path(__file__).resolve().parents[3] / "web" / "rescue-dashboard")
+)
+
+# Каталог оффлайн-тайлов карты. Заполняется через scripts/import_tiles/download_tiles.py.
+# Если пуст или не существует — карта в дашборде будет серой, но маркеры рисуются.
+TILES_DIR = Path(os.environ.get("TILES_DIR", "/var/lib/mesh-net/tiles"))
 
 # Один Broadcaster на всё приложение
 _broadcaster = Broadcaster(DB_PATH)
@@ -169,3 +181,31 @@ async def ws_endpoint(websocket: WebSocket):
         pass
     finally:
         await _broadcaster.disconnect(websocket)
+
+
+# ============================================================
+# Оффлайн-тайлы карты — /tiles/{z}/{x}/{y}.png
+# ============================================================
+# Монтируем ДО mount("/", ...), иначе корневой StaticFiles перехватит /tiles
+# и вернёт 404 для отсутствующего файла внутри dashboard-каталога.
+if TILES_DIR.exists():
+    app.mount("/tiles", StaticFiles(directory=TILES_DIR), name="tiles")
+    log.info("tiles mounted at /tiles  (dir=%s)", TILES_DIR)
+else:
+    log.info("tiles dir not found: %s — оффлайн-карта пустая (см. scripts/import_tiles/)",
+             TILES_DIR)
+
+
+# ============================================================
+# Статика дашборда — монтируется ПОСЛЕДНЕЙ
+# ============================================================
+# Важно: app.mount("/", StaticFiles) перехватит любой путь, не пойманный
+# выше. Поэтому /api/*, /ws, /tiles, /docs, /openapi.json должны быть
+# зарегистрированы РАНЬШЕ — что у нас и так выполнено.
+#
+# html=True означает: GET / отдаёт index.html, GET /foo без файла → 404.
+if DASHBOARD_DIR.exists():
+    app.mount("/", StaticFiles(directory=DASHBOARD_DIR, html=True), name="dashboard")
+    log.info("dashboard mounted at /  (dir=%s)", DASHBOARD_DIR)
+else:
+    log.warning("dashboard dir not found: %s — статика не примонтирована", DASHBOARD_DIR)

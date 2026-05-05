@@ -57,6 +57,9 @@ sudo journalctl -u mesh-rescue-api -f
 
 | Метод | URL | Что делает |
 |------:|-----|-----------|
+| GET   | `/`                          | `index.html` дашборда (если `DASHBOARD_DIR` существует) |
+| GET   | `/style.css`, `/app.js`, `/lib/...` | статика дашборда |
+| GET   | `/tiles/{z}/{x}/{y}.png`     | оффлайн-тайлы карты (если `TILES_DIR` существует) |
 | GET   | `/api/health`                | живой ли сервис |
 | GET   | `/api/stats`                 | счётчики (всего PING/SOS, активных устройств) |
 | GET   | `/api/tourists`              | кто сейчас активен (PING за последние 10 мин) |
@@ -88,6 +91,23 @@ Push-only канал. После `connect()` сервер шлёт JSON-сооб
 
 Один сервер — один Broadcaster — несколько подключений. Несколько
 вкладок дашборда нормально работают параллельно.
+
+## Статика дашборда
+
+`app.py` в самом конце делает `app.mount("/", StaticFiles(directory=…))`.
+Каталог по умолчанию — `web/rescue-dashboard/` (вычисляется относительно
+`app.py`), переопределяется переменной `DASHBOARD_DIR`.
+
+Mount именно на `/` (а не на `/dashboard`): чтобы оператор открыл
+`http://<rpi5-ip>:8000` и сразу видел карту. Все `/api/*` и `/ws`
+зарегистрированы декораторами **выше** в файле — у них приоритет, так
+что `/api/health` не уйдёт в StaticFiles. То же с автогенеренными
+`/docs` и `/openapi.json`.
+
+Сами файлы дашборда раздаются как есть; `bash services/rescue-api/install.sh`
+перед сборкой venv ещё дёргает `web/rescue-dashboard/install.sh` —
+он скачивает Leaflet 1.9.4 в `web/rescue-dashboard/lib/`. Без этого
+шага на `/` будет HTML, но без карты (`L is not defined` в консоли).
 
 ## Координаты
 
@@ -139,6 +159,8 @@ inotify по wal-файлу или UNIX socket из lora-station.
 | `RESCUE_API_PORT` | `8000` | порт |
 | `LOG_LEVEL` | `INFO` | уровень логов |
 | `ALLOW_CORS` | `1` | разрешить CORS (для dashboard на другом порту, для разработки) |
+| `DASHBOARD_DIR` | `<repo>/web/rescue-dashboard` | каталог статики дашборда (mount на `/`) |
+| `TILES_DIR` | `/var/lib/mesh-net/tiles` | каталог оффлайн-тайлов карты (mount на `/tiles`) |
 
 ## Проверка работоспособности
 

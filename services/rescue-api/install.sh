@@ -47,6 +47,18 @@ pip install --upgrade pip >/dev/null
 pip install -r requirements.txt
 deactivate
 
+# 5. Статика дашборда: скачать Leaflet в web/rescue-dashboard/lib/
+# rescue-api сам отдаёт эти файлы (StaticFiles на /), так что без них
+# на http://<rpi5-ip>:8000/ будет 404 на /lib/leaflet.js.
+DASHBOARD_INSTALL="$(cd ../../web/rescue-dashboard && pwd)/install.sh"
+if [ -x "$DASHBOARD_INSTALL" ] || [ -f "$DASHBOARD_INSTALL" ]; then
+    echo
+    echo "[install] Запускаю установщик дашборда (Leaflet)..."
+    bash "$DASHBOARD_INSTALL"
+else
+    echo "[install] (warn) $DASHBOARD_INSTALL не найден — пропускаю"
+fi
+
 echo
 echo "[install] Готово. Запуск руками:"
 echo "    source .venv/bin/activate"
@@ -54,4 +66,5 @@ echo "    python -m rescue_api"
 echo
 echo "Проверить:"
 echo "    curl http://localhost:8000/api/stats"
-echo "    открой http://<rpi5-ip>:8000/docs (swagger UI)"
+echo "    открой http://<rpi5-ip>:8000/        (дашборд с картой)"
+echo "    открой http://<rpi5-ip>:8000/docs    (swagger UI)"

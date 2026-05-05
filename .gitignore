@@ -30,6 +30,9 @@ node_modules/
 web/rescue-dashboard/build/
 web/rescue-dashboard/dist/
 
+# Вендорный JS дашборда — скачивается через web/rescue-dashboard/install.sh
+web/rescue-dashboard/lib/
+
 # OS
 .DS_Store
 Thumbs.db
