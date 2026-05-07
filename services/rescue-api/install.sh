@@ -43,8 +43,11 @@ fi
 source .venv/bin/activate
 
 # 4. Зависимости
+# --timeout 60 --retries 10: PyPI-CDN на больших бинарных whl-ах
+# (pydantic_core, uvloop) у нас в РФ периодически отваливается по
+# дефолтному 15-сек таймауту. Лучше подождать дольше, чем падать.
 pip install --upgrade pip >/dev/null
-pip install -r requirements.txt
+pip install --timeout 60 --retries 10 -r requirements.txt
 deactivate
 
 # 5. Статика дашборда: скачать Leaflet в web/rescue-dashboard/lib/

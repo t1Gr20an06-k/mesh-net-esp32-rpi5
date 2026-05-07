@@ -51,7 +51,9 @@ if [ -s requirements.txt ]; then
     # shellcheck disable=SC1091
     source .venv/bin/activate
     pip install --upgrade pip >/dev/null
-    pip install -r requirements.txt
+    # --timeout 60 --retries 10: PyPI-CDN на больших бинарных whl-ах
+    # у нас в РФ периодически отваливается по дефолтному 15-сек таймауту.
+    pip install --timeout 60 --retries 10 -r requirements.txt
     deactivate
 fi
 echo "[install] Зависимости готовы"
