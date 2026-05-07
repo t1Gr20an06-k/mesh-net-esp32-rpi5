@@ -7,7 +7,7 @@
  * WebSocket → init.
  *
  * Источники данных:
- *   GET /api/tourists      — кто сейчас активен (PING < 10 мин)
+ *   GET /api/tourists      — кто сейчас активен (PING недавно, см. ACTIVE_THRESHOLD_MIN в rescue-api)
  *   GET /api/sos           — все SOS (открытые + закрытые)
  *   GET /api/stats         — счётчики для шапки
  *   WS  /ws                — push новых ping/sos из БД
@@ -179,7 +179,18 @@ async function refreshTourists() {
         const r = await fetch('/api/tourists');
         touristsCache = await r.json();
         renderTourists();
+        // Сначала добавляем/обновляем маркеры активных,
+        // потом сносим маркеры тех, кого больше нет в /api/tourists
+        // (порог в БД: ACTIVE_THRESHOLD_MIN). Иначе после выключения
+        // ESP32 синий маркер висит на карте до перезагрузки страницы.
+        const activeIds = new Set(touristsCache.map(t => t.device_id));
         for (const t of touristsCache) upsertTouristMarker(t);
+        for (const [id, m] of tourMarkers) {
+            if (!activeIds.has(id)) {
+                map.removeLayer(m);
+                tourMarkers.delete(id);
+            }
+        }
     } catch (e) {
         console.warn('refreshTourists fail', e);
     }
@@ -358,6 +369,16 @@ async function init() {
     // Подстраховка: раз в 30 сек пересчитываем статы (если WS «online» молчит,
     // увидим расхождение в счётчиках).
     setInterval(refreshStats, 30000);
+
+    // Турист может ВЫПАСТЬ с эфира (выключили ESP32, разрядился аккум,
+    // ушёл из зоны LoRa). WS-событие 'ping' в этом случае не приходит,
+    // и список туристов "залипает" с устаревшими записями. Поэтому раз
+    // в 30 сек принудительно рефрешим списки — серверный фильтр по
+    // ACTIVE_THRESHOLD_MIN сам выкинет тех, у кого PING устарел.
+    setInterval(() => {
+        refreshTourists();
+        refreshSos();
+    }, 30000);
 }
 
 init();

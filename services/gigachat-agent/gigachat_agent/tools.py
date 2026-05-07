@@ -30,9 +30,12 @@ TOOL_DEFS: list[Function] = [
         name="get_active_tourists",
         description=(
             "Возвращает список туристов, которые СЕЙЧАС в эфире — слали PING "
-            "за последние 10 минут. Поля: device_id, name, position {lat,lon}, "
-            "battery_pct, rssi, last_ping_at. Используй когда оператор спрашивает "
-            "'кто сейчас в эфире', 'кто на маршруте', 'кого мы видим'."
+            "за последние пару минут. Поля: device_id, name, position {lat,lon}, "
+            "battery_pct, rssi, last_ping_at. Зови этот инструмент на запросы: "
+            "'кто сейчас в эфире', 'кто на маршруте', 'кого мы видим', "
+            "'сколько туристов в эфире', 'есть кто-нибудь', а также как часть "
+            "общего отчёта об обстановке ('как обстановка', 'что происходит', "
+            "'статус', 'что у нас')."
         ),
         parameters=FunctionParameters(
             type="object",
@@ -45,8 +48,9 @@ TOOL_DEFS: list[Function] = [
         description=(
             "Возвращает SOS-инциденты. По умолчанию только открытые "
             "(не resolved). Поля: id, device_id, sos_type_label, position, "
-            "received_at, acked, resolved, message. Используй на любые "
-            "вопросы про SOS / тревоги / ЧС."
+            "received_at, acked, resolved, message. Зови на вопросы про SOS / "
+            "тревоги / ЧС / 'всё спокойно?', а также как часть общего отчёта "
+            "об обстановке ('как обстановка', 'что происходит', 'статус')."
         ),
         parameters=FunctionParameters(
             type="object",

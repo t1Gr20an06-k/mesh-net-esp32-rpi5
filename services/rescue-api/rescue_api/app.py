@@ -111,7 +111,7 @@ def stats():
 
 @app.get("/api/tourists", response_model=list[models.Tourist])
 def tourists():
-    """Кто сейчас 'в эфире' — был PING за последние 10 минут."""
+    """Кто сейчас 'в эфире' — был PING за последние ACTIVE_THRESHOLD_MIN минут (см. db.py)."""
     with db.db_read(DB_PATH) as conn:
         return [models.Tourist.from_row(r) for r in db.list_active_tourists(conn)]
 
