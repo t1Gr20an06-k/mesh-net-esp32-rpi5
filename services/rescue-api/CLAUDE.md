@@ -47,11 +47,35 @@ source .venv/bin/activate
 python -m rescue_api
 ```
 
-### Через systemd (после `scripts/systemd/install.sh`)
+### Через systemd (продакшн на RPi5)
+
+После `sudo bash scripts/systemd/install.sh` сервис стартует автоматически
+при включении RPi5 (после `mesh-lora-station`, см. `After=` в юните).
+
 ```bash
+# Статус
 sudo systemctl status mesh-rescue-api
+
+# Live-логи
 sudo journalctl -u mesh-rescue-api -f
+
+# Рестарт после `git pull` или правки кода
+sudo systemctl restart mesh-rescue-api
+
+# Остановить, не трогая autostart
+sudo systemctl stop mesh-rescue-api
+
+# Полностью отключить
+sudo systemctl disable --now mesh-rescue-api
 ```
+
+⚠ **Не запускать systemd-копию и `python -m rescue_api` руками одновременно** —
+обе будут биться за порт `8000` (см. `RESCUE_API_PORT`), вторая упадёт
+с `address already in use`. Перед ручным запуском: `sudo systemctl stop mesh-rescue-api`.
+
+ENV редактируется в `/etc/systemd/system/mesh-rescue-api.service` или в
+шаблоне `scripts/systemd/mesh-rescue-api.service` + `sudo bash scripts/systemd/install.sh mesh-rescue-api`.
+После правки — `sudo systemctl daemon-reload && sudo systemctl restart mesh-rescue-api`.
 
 ## Эндпоинты
 
@@ -69,6 +93,7 @@ sudo journalctl -u mesh-rescue-api -f
 | GET   | `/api/sos/{id}`              | один SOS |
 | POST  | `/api/sos/{id}/ack`          | подтвердить SOS, body `{"acked_by": <device_id>}` |
 | POST  | `/api/sos/{id}/resolve`      | закрыть инцидент, body `{"notes": "..."}` |
+| POST  | `/api/chat`                  | прокси к `gigachat-agent` (`http://127.0.0.1:8001/chat`), body `{message, history}` |
 | WS    | `/ws`                        | push-канал, см. ниже |
 
 Авто-документация Swagger UI: `http://<rpi5-ip>:8000/docs`
@@ -161,6 +186,8 @@ inotify по wal-файлу или UNIX socket из lora-station.
 | `ALLOW_CORS` | `1` | разрешить CORS (для dashboard на другом порту, для разработки) |
 | `DASHBOARD_DIR` | `<repo>/web/rescue-dashboard` | каталог статики дашборда (mount на `/`) |
 | `TILES_DIR` | `/var/lib/mesh-net/tiles` | каталог оффлайн-тайлов карты (mount на `/tiles`) |
+| `GIGACHAT_AGENT_URL` | `http://127.0.0.1:8001` | URL gigachat-agent (прокси `POST /api/chat`) |
+| `GIGACHAT_AGENT_TIMEOUT` | `25` | секунды на один запрос к gigachat-agent |
 
 ## Проверка работоспособности
 

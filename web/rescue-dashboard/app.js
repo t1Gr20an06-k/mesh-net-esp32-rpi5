@@ -243,6 +243,104 @@ function connectWS() {
     };
 }
 
+// --- Чат с ИИ-диспетчером ---------------------------------------------------
+// История держится только в памяти страницы — F5 = чистый лист.
+// Это сознательно: оператор обычно начинает смену с актуальной картины,
+// а не с разговора предыдущей смены. На сервере ничего не сохраняется.
+
+const chatHistory = [];   // [{role:'user'|'assistant', content:'...'}, ...]
+const CHAT_HISTORY_LIMIT = 20;   // последние N ходов в каждый /api/chat
+
+function chatAppend(node) {
+    const log = $('#chat-log');
+    log.appendChild(node);
+    log.scrollTop = log.scrollHeight;
+    return node;
+}
+
+function chatBubble(cls, text) {
+    const el = document.createElement('div');
+    el.className = 'chat-msg ' + cls;
+    el.textContent = text;
+    return el;
+}
+
+async function sendChatMessage(text) {
+    const sendBtn = $('#chat-send');
+    const input = $('#chat-input');
+
+    chatAppend(chatBubble('chat-user', text));
+    chatHistory.push({ role: 'user', content: text });
+
+    const thinking = chatAppend(chatBubble('chat-thinking', 'AI думает…'));
+
+    sendBtn.disabled = true;
+    input.disabled = true;
+
+    try {
+        const r = await fetch('/api/chat', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+                message: text,
+                history: chatHistory.slice(-CHAT_HISTORY_LIMIT - 1, -1),  // без только что добавленного
+            }),
+        });
+        const data = await r.json();
+        thinking.remove();
+
+        if (data.error) {
+            chatAppend(chatBubble('chat-error', data.error));
+            // Ошибочный ответ в историю не кладём — следующий вопрос пойдёт без него
+        } else {
+            const bubble = chatBubble('chat-assistant', data.reply || '(пустой ответ)');
+            if (Array.isArray(data.tools_used) && data.tools_used.length) {
+                const tools = document.createElement('div');
+                tools.className = 'chat-tools';
+                tools.textContent = '⚙ ' + data.tools_used.join(', ');
+                bubble.appendChild(tools);
+            }
+            chatAppend(bubble);
+            chatHistory.push({ role: 'assistant', content: data.reply || '' });
+        }
+    } catch (e) {
+        thinking.remove();
+        chatAppend(chatBubble('chat-error', `AI недоступен (сетевая ошибка: ${e.message})`));
+    } finally {
+        sendBtn.disabled = false;
+        input.disabled = false;
+        input.focus();
+    }
+}
+
+function initChat() {
+    const form = $('#chat-form');
+    const input = $('#chat-input');
+    const clearBtn = $('#chat-clear');
+
+    form.addEventListener('submit', (e) => {
+        e.preventDefault();
+        const text = input.value.trim();
+        if (!text) return;
+        input.value = '';
+        sendChatMessage(text);
+    });
+
+    // Enter — отправить, Shift+Enter — перенос строки. Стандартный UX мессенджера.
+    input.addEventListener('keydown', (e) => {
+        if (e.key === 'Enter' && !e.shiftKey) {
+            e.preventDefault();
+            form.requestSubmit();
+        }
+    });
+
+    clearBtn.addEventListener('click', () => {
+        chatHistory.length = 0;
+        $('#chat-log').innerHTML = '';
+        chatAppend(chatBubble('chat-system', 'История очищена.'));
+    });
+}
+
 // --- Старт ------------------------------------------------------------------
 
 async function init() {
@@ -255,6 +353,7 @@ async function init() {
     }
 
     connectWS();
+    initChat();
 
     // Подстраховка: раз в 30 сек пересчитываем статы (если WS «online» молчит,
     // увидим расхождение в счётчиках).

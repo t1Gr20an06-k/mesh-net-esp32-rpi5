@@ -1,0 +1,15 @@
+# gigachat-agent — runtime deps
+# Все версии зафиксированы. Обновлять — через `pip list --outdated` + ручная проверка.
+
+# Sber GigaChat SDK: function calling, авто-обновление access_token из credentials.
+gigachat==0.2.0
+
+# Web-сервер. Совпадает с rescue-api, чтобы ставить из одного кеша pip.
+fastapi==0.128.0
+uvicorn[standard]==0.32.1
+
+# HTTP-клиент в инструментах (вызовы rescue-api).
+# httpx уже идёт транзитом через fastapi/gigachat, но фиксируем явно.
+httpx==0.28.1
+
+# Pydantic — приходит с fastapi, явно не пиним

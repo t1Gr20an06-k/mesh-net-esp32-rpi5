@@ -29,7 +29,7 @@ tests/
   integration/             — Интеграционные тесты mesh-сети
 web/
   info-portal/             — Captive Wi-Fi портал (offline HTML/JS, карты, контент)
-  rescue-dashboard/        — React-дашборд спасателей (Leaflet + WebSocket)
+  rescue-dashboard/        — Дашборд спасателей: vanilla HTML/JS + Leaflet + WebSocket (без сборщика)
   tourist-web/             — Мобильный веб-интерфейс туриста (GPS телефона → WebSocket → ESP32 → LoRa)
 Docs/                      — Техническая документация
 ```
@@ -119,33 +119,41 @@ SOS_INTERVAL_MS = 500
 Выполняется один раз после клонирования репозитория.
 
 ```bash
-git clone <repo> && cd mesh-net-tropy
+git clone <repo> && cd "Mesh-net тропы"
 
-# База данных
-bash scripts/db_init/init.sh
-
-# Убедиться что SPI включён
-ls /dev/spidev0.*   # должно быть spidev0.0
+# 1. Убедиться что SPI включён (для lora-station)
+ls /dev/spidev0.*   # должно быть /dev/spidev0.0
 # Если нет: sudo raspi-config nonint do_spi 0 && sudo reboot
 
-# Установить зависимости всех сервисов
-cd services/lora-station   && python3 -m venv .venv && source .venv/bin/activate && pip install -r requirements.txt && deactivate && cd ../..
-cd services/rescue-api    && python3 -m venv .venv && source .venv/bin/activate && pip install -r requirements.txt && deactivate && cd ../..
-cd services/gigachat-agent && python3 -m venv .venv && source .venv/bin/activate && pip install -r requirements.txt && deactivate && cd ../..
-cd web/rescue-dashboard    && npm install && npm run build && cd ../..
+# 2. lora-station — apt-пакеты (lgpio через apt, не pip!) + venv + init БД
+cd services/lora-station && bash install.sh && cd ../..
 
-# Прописать переменные окружения (один раз)
-sudo cp scripts/systemd/mesh-net.env /etc/mesh-net/env
-sudo nano /etc/mesh-net/env   # вставить GIGACHAT_TOKEN и остальное
+# 3. rescue-api — venv + Leaflet для дашборда (вызывает web/rescue-dashboard/install.sh)
+cd services/rescue-api && bash install.sh && cd ../..
 
-# Установить и запустить systemd-сервисы
-sudo cp scripts/systemd/*.service /etc/systemd/system/
-sudo systemctl daemon-reload
-sudo systemctl enable --now mesh-lora-station mesh-rescue-api mesh-gigachat-agent
+# 4. gigachat-agent — venv + GigaChat SDK
+#    Положить Authorization key в services/gigachat-agent/token-key
+#    (формат — см. services/gigachat-agent/CLAUDE.md). Без ключа сервис стартует,
+#    но чат ответит «AI недоступен (ключ не задан)».
+cd services/gigachat-agent && bash install.sh && cd ../..
 
-# Проверить что всё живо
-sudo systemctl status mesh-*
-curl http://localhost:8000/stats
+# 5. (опционально) Оффлайн-тайлы карты для дашборда
+#    Без этого шага карта будет серой, маркеры всё равно рисуются.
+#    Краснодар, zoom 5-14 (~1500 тайлов, ~25 мин):
+python3 scripts/import_tiles/download_tiles.py \
+    --bbox 38.7,44.8,39.4,45.3 --zoom 5-14
+
+# 6. systemd-юниты (autostart при включении RPi5)
+sudo bash scripts/systemd/install.sh
+# Скрипт сам подставит __USER__/__REPO__, проверит venv, группы gpio/spi,
+# не запущен ли lora-station руками — и активирует только то что готово.
+
+# 7. Проверить что всё живо
+sudo systemctl status mesh-lora-station mesh-rescue-api mesh-gigachat-agent
+curl http://localhost:8000/api/health   # {"status":"ok"}
+curl http://localhost:8000/api/stats    # счётчики из БД
+curl http://127.0.0.1:8001/health       # gigachat-agent (только локально)
+# Открыть в браузере: http://<rpi5-ip>:8000  — дашборд спасателей с чатом
 ```
 
 После этого **сервисы стартуют автоматически** при каждом включении RPi5.
@@ -155,17 +163,57 @@ curl http://localhost:8000/stats
 ```bash
 git pull
 
-# Если изменились Python-зависимости:
-cd services/rescue-api && source .venv/bin/activate && pip install -r requirements.txt
-
-# Если изменился фронтенд:
-cd web/rescue-dashboard && npm run build
+# Если изменились Python-зависимости — для каждого тронутого сервиса:
+cd services/rescue-api    && source .venv/bin/activate && pip install -r requirements.txt && deactivate && cd ../..
+cd services/gigachat-agent && source .venv/bin/activate && pip install -r requirements.txt && deactivate && cd ../..
 
 # Перезапустить сервисы
 sudo systemctl restart mesh-rescue-api mesh-gigachat-agent
+# lora-station — только при правках железной логики
+# sudo systemctl restart mesh-lora-station
 
-# lora-station перезапускать только если менялась логика работы с железом
-sudo systemctl restart mesh-lora-station
+# Web-фронтенд (vanilla HTML/JS) — раздаётся StaticFiles, перезапуск не нужен,
+# достаточно F5 в браузере. Если изменился install.sh дашборда (новая версия
+# Leaflet) — перезапусти один раз: bash web/rescue-dashboard/install.sh
+```
+
+## Управление systemd-сервисами
+
+Юниты — `mesh-lora-station.service`, `mesh-rescue-api.service`,
+`mesh-gigachat-agent.service`. Шаблоны лежат в `scripts/systemd/`,
+подставляет их `scripts/systemd/install.sh` (плейсхолдеры `__USER__`/`__REPO__`).
+
+```bash
+# Статус
+sudo systemctl status mesh-lora-station
+sudo systemctl status mesh-rescue-api
+sudo systemctl status mesh-gigachat-agent
+
+# Перезапуск (после изменения кода или ENV в юните)
+sudo systemctl restart mesh-rescue-api
+
+# Остановить / запустить
+sudo systemctl stop mesh-lora-station
+sudo systemctl start mesh-lora-station
+
+# Выключить автозапуск (но не трогать текущий процесс)
+sudo systemctl disable mesh-rescue-api
+
+# Полностью отключить и остановить
+sudo systemctl disable --now mesh-lora-station
+
+# Переустановить юнит после правки шаблона в scripts/systemd/
+sudo bash scripts/systemd/install.sh mesh-rescue-api    # один сервис
+sudo bash scripts/systemd/install.sh                    # все сразу
+```
+
+Если правишь ENV прямо в `/etc/systemd/system/mesh-*.service` (например,
+поменять `LOG_LEVEL` или `RESCUE_API_PORT`):
+
+```bash
+sudo systemctl edit --full mesh-rescue-api    # откроет в редакторе
+sudo systemctl daemon-reload
+sudo systemctl restart mesh-rescue-api
 ```
 
 ## Логи в реальном времени
@@ -176,9 +224,16 @@ sudo journalctl -u "mesh-*" -f
 
 # Конкретный сервис
 sudo journalctl -u mesh-lora-station -f
+sudo journalctl -u mesh-rescue-api -f
 
 # Только ошибки
 sudo journalctl -u "mesh-*" -p err -f
+
+# За последние 10 минут
+sudo journalctl -u mesh-lora-station --since "10 min ago"
+
+# Последние 200 строк без follow
+sudo journalctl -u mesh-rescue-api -n 200 --no-pager
 ```
 
 ---
@@ -187,13 +242,17 @@ sudo journalctl -u "mesh-*" -p err -f
 
 | Переменная | Где используется | Описание |
 |---|---|---|
-| `GIGACHAT_TOKEN` | gigachat-agent | OAuth2 токен GigaChat API |
-| `DB_PATH` | rescue-api, gigachat-agent | Путь к SQLite (default: `/var/lib/mesh-net/mesh.db`) |
+| `GIGACHAT_AUTHORIZATION_KEY` | gigachat-agent | Authorization key (base64), перетирает token-key. Рекомендуемый способ для systemd-overrides |
+| `GIGACHAT_SCOPE` | gigachat-agent | `GIGACHAT_API_PERS` (default) / `_B2B` / `_CORP` |
+| `GIGACHAT_MODEL` | gigachat-agent | `GigaChat` (default) / `GigaChat-Pro` / `GigaChat-Plus` |
+| `RESCUE_API_URL` | gigachat-agent | URL rescue-api для инструментов (default: `http://127.0.0.1:8000`) |
+| `GIGACHAT_AGENT_URL` | rescue-api | URL gigachat-agent для прокси `/api/chat` (default: `http://127.0.0.1:8001`) |
+| `DB_PATH` | rescue-api, lora-station | Путь к SQLite (default: `/var/lib/mesh-net/mesh.db`) |
 | `LORA_SPI_BUS` | lora-station | SPI шина (default: `0`) |
-| `LORA_SPI_CS` | lora-station | CS пин (default: `0`) |
+| `LORA_SPI_CS` | lora-station | CS пин (default: `8`) |
 | `LORA_RESET_PIN` | lora-station | GPIO reset (default: `22`) |
 | `LORA_DIO1_PIN` | lora-station | GPIO DIO1/IRQ (default: `23`) |
-| `RESCUE_WHITELIST` | lora-station | Comma-separated device_id для RESCUE-канала |
+| `NODE_DEVICE_ID` | lora-station | ID этого узла (default: `0x0001`) |
 
 ---
 
@@ -246,22 +305,32 @@ sudo journalctl -u "mesh-*" -p err -f
 - ✅ Полевой тест пройден: SOS (3 пакета) и PING долетают от ESP32 до RPi5 за ~1 сек, RSSI=-41 дБм, SNR=8-9 дБ, CRC=0 ошибок (см. `firmware/esp32-terminal/logs`)
 - ⚠ Костыль: на этой плате `dtoverlay=spi0-1cs,cs0_pin=27` отправил kernel-CS на GPIO 27, поэтому CS на HT-RA62 (GPIO 8) дёргаем сами через `lgpio.gpio_write` в `_spi_xfer` — подробнее в `services/lora-station/CLAUDE.md`
 
-### Этап 3 — relay-node + info-portal
+### Этап 3 — rescue-api + rescue-dashboard ✅ ВЫПОЛНЕН
+Файлы: `services/rescue-api/`, `web/rescue-dashboard/`, `scripts/import_tiles/`, `scripts/systemd/`
+- ✅ `rescue-api` — FastAPI + WebSocket, REST `/api/{tourists,sos,devices,pings,stats,health}`, WS `/ws` (push при новых PING/SOS)
+- ✅ Read-only SQLite (`?mode=ro`) для GET-эндпоинтов, read-write только для ack/resolve
+- ✅ Дашборд `web/rescue-dashboard/` — vanilla HTML/JS + Leaflet 1.9.4 (без сборщика, без npm), тёмная тема
+- ✅ Карта офлайн: тайлы скачиваются `scripts/import_tiles/download_tiles.py` в `/var/lib/mesh-net/tiles/`, rescue-api монтирует на `/tiles`
+- ✅ Маркеры: туристы (синие, blue marker), SOS (красные → оранжевые при ack → зелёные при resolve), популяр с battery/RSSI/timestamp
+- ✅ Фильтр `(0, 0)` от ESP32 без GPS-фикса — на карте не рисуем, в списке выводим серым
+- ✅ WS auto-reconnect раз в 2 сек после `onclose`
+- ✅ systemd-юниты `mesh-lora-station.service` + `mesh-rescue-api.service` + `scripts/systemd/install.sh` (подставляет __USER__/__REPO__, проверяет venv и группы gpio/spi)
+
+### Этап 4 — gigachat-agent + чат в дашборде ✅ ВЫПОЛНЕН
+Файлы: `services/gigachat-agent/`, правки в `web/rescue-dashboard/` и `services/rescue-api/`
+- ✅ FastAPI-сервис на 127.0.0.1:8001 на той же RPi5 (наружу не светится)
+- ✅ Auth: SDK `gigachat` 0.2.0 с Authorization key из `token-key` — токен обновляется автоматически
+- ✅ Function calling: 4 инструмента (`get_active_tourists`, `get_sos_events`, `get_device_track`, `get_stats`) — все через HTTP к rescue-api
+- ✅ Прокси `POST /api/chat` в rescue-api — дашборд ходит через single-origin без CORS
+- ✅ Чат-панель в дашборде: пузыри user/assistant, индикатор «AI думает…», кнопка очистки, история в памяти страницы
+- ✅ Обработка ошибок: модель/сеть/rescue-api/таймаут — всё возвращается как `error` в ответе с человекочитаемой причиной, дашборд красит красным
+- ✅ systemd-юнит `mesh-gigachat-agent.service` (After mesh-rescue-api)
+
+### Этап 5 — relay-node + info-portal
 Файлы: `services/relay-node/`, `web/info-portal/`
-- Ретранслятор на промежуточном узле (инфо-точке)
+- Ретранслятор на промежуточном узле (инфо-точке) — отдельная RPi5 в горах
 - Captive Wi-Fi портал: офлайн HTML со статичной информацией о маршруте + карта
-
-### Этап 4 — rescue-api + rescue-dashboard + gigachat-agent
-Файлы: `services/rescue-api/`, `web/rescue-dashboard/`, `services/gigachat-agent/`
-- REST API + WebSocket для дашборда
-- React-дашборд: карта Leaflet, SOS-алерты, список устройств
-- GigaChat function calling с инструментами get_tourists / get_sos / get_location / get_stats
-
-### Этап 5 — Интеграция и деплой
-Файлы: `tests/`, `scripts/systemd/`
-- Полевые тесты дальности LoRa
-- systemd-юниты для автозапуска
-- Проверка критических сценариев
+- Полевые тесты дальности LoRa, проверка критических сценариев
 
 ---
 
@@ -282,9 +351,13 @@ sudo journalctl -u "mesh-*" -p err -f
 | `firmware/esp32-terminal/scripts/` | ✅ `gen_cert.sh` + `patch_esp32_https_server.py` |
 | `scripts/db_init/init.sql` + `init.sh` | ✅ 4 таблицы + скрипт инициализации |
 | `services/lora-station/` (демон) | ✅ Полевой тест пройден на железе (SOS + PING от ESP32 → RPi5 → SQLite) |
-| `services/relay-node/`, `web/info-portal/` | ⬜ Этап 3 |
-| `services/rescue-api/`, `services/gigachat-agent/`, `web/rescue-dashboard/` | ⬜ Этап 4 |
-| systemd-юниты, полевые тесты | ⬜ Этап 5 |
+| `services/rescue-api/` | ✅ FastAPI + WS, оффлайн-тайлы карты на `/tiles`, статика дашборда на `/` |
+| `web/rescue-dashboard/` | ✅ Vanilla HTML/JS + Leaflet, маркеры/SOS/WS-reconnect — работает на железе |
+| `scripts/import_tiles/download_tiles.py` | ✅ Стандартный stdlib, идемпотентный, rate-limit 1 req/сек |
+| systemd: `mesh-lora-station`, `mesh-rescue-api`, `mesh-gigachat-agent` | ✅ Шаблоны + `scripts/systemd/install.sh` (autostart на RPi5) |
+| `services/gigachat-agent/` + чат-панель в дашборде | ✅ GigaChat function calling (4 инструмента), прокси `/api/chat`, UI |
+| `services/relay-node/`, `web/info-portal/` | ⬜ Этап 5 |
+| Полевые тесты дальности | ⬜ Этап 5 |
 
 ---
 

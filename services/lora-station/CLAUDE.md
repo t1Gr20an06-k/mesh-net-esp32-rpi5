@@ -35,6 +35,8 @@ services/lora-station/
 
 ## Запуск
 
+### Руками (отладка)
+
 ```bash
 # Один раз после клонирования репо
 bash install.sh
@@ -49,6 +51,37 @@ python -m lora_station --verbose
 # Альтернативный путь к БД
 python -m lora_station --db /custom/path/mesh.db
 ```
+
+### Через systemd (продакшн на RPi5)
+
+После `sudo bash scripts/systemd/install.sh` демон стартует автоматически
+при включении RPi5. Управление:
+
+```bash
+# Статус и последние логи
+sudo systemctl status mesh-lora-station
+
+# Live-логи
+sudo journalctl -u mesh-lora-station -f
+
+# Рестарт (после правок кода или ENV в юните)
+sudo systemctl restart mesh-lora-station
+
+# Остановить, не выключая автозапуск
+sudo systemctl stop mesh-lora-station
+
+# Полностью отключить (на время отладки руками)
+sudo systemctl disable --now mesh-lora-station
+```
+
+⚠ **Не запускать одновременно systemd-копию и `python -m lora_station` руками** —
+обе попытаются открыть `/dev/spidev0.0`, та что вторая упадёт с `Device or resource busy`.
+Перед ручным запуском: `sudo systemctl stop mesh-lora-station`.
+
+ENV-переменные юнита редактируются в `/etc/systemd/system/mesh-lora-station.service`
+(или в шаблоне `scripts/systemd/mesh-lora-station.service` + переустановка
+через `sudo bash scripts/systemd/install.sh mesh-lora-station`). После правки —
+`sudo systemctl daemon-reload && sudo systemctl restart mesh-lora-station`.
 
 ## Параметры радио (должны совпадать на ВСЕХ узлах!)
 

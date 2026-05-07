@@ -15,8 +15,10 @@ import os
 from contextlib import asynccontextmanager
 from pathlib import Path
 
-from fastapi import FastAPI, HTTPException, Query, WebSocket, WebSocketDisconnect
+import httpx
+from fastapi import FastAPI, HTTPException, Query, Request, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import JSONResponse
 from fastapi.staticfiles import StaticFiles
 
 from . import db, models
@@ -26,6 +28,12 @@ log = logging.getLogger("rescue_api")
 
 DB_PATH    = os.environ.get("DB_PATH", db.DEFAULT_DB_PATH)
 ALLOW_CORS = os.environ.get("ALLOW_CORS", "1") not in ("0", "false", "")
+
+# gigachat-agent крутится на той же машине (см. systemd-юнит). Дашборд
+# ходит сюда через POST /api/chat — это даёт single-origin для фронта
+# и позволяет gigachat-agent биндиться только на 127.0.0.1.
+GIGACHAT_AGENT_URL = os.environ.get("GIGACHAT_AGENT_URL", "http://127.0.0.1:8001").rstrip("/")
+GIGACHAT_AGENT_TIMEOUT = float(os.environ.get("GIGACHAT_AGENT_TIMEOUT", "25"))
 
 # Путь до статики дашборда: services/rescue-api/rescue_api/app.py → подняться 3 раза → web/rescue-dashboard
 DASHBOARD_DIR = Path(
@@ -40,16 +48,27 @@ TILES_DIR = Path(os.environ.get("TILES_DIR", "/var/lib/mesh-net/tiles"))
 # Один Broadcaster на всё приложение
 _broadcaster = Broadcaster(DB_PATH)
 
+# httpx-клиент для прокси на gigachat-agent. Создаётся в lifespan.
+_chat_client: httpx.AsyncClient | None = None
+
 
 @asynccontextmanager
 async def lifespan(_: FastAPI):
     # startup
+    global _chat_client
     log.info("rescue-api старт, DB=%s", DB_PATH)
+    log.info("gigachat-agent proxy → %s", GIGACHAT_AGENT_URL)
+    _chat_client = httpx.AsyncClient(
+        base_url=GIGACHAT_AGENT_URL,
+        timeout=GIGACHAT_AGENT_TIMEOUT,
+    )
     _broadcaster.start()
     yield
     # shutdown
     log.info("rescue-api shutdown")
     await _broadcaster.stop()
+    if _chat_client is not None:
+        await _chat_client.aclose()
 
 
 app = FastAPI(
@@ -159,6 +178,42 @@ def sos_resolve(sos_id: int, body: models.ResolveRequest):
         if not row:
             raise HTTPException(404, "SOS не найден")
         return models.Sos.from_row(row)
+
+
+# ============================================================
+# Прокси на gigachat-agent — POST /api/chat
+# ============================================================
+# Дашборд отправляет сюда {message, history}, мы форвардим как есть на
+# http://127.0.0.1:8001/chat и возвращаем ответ один-к-одному. Сделано
+# через прокси (а не CORS на gigachat-agent), чтобы:
+#   1) фронт ходит на один origin — без CORS в браузере;
+#   2) gigachat-agent можно держать на 127.0.0.1, не открывая 8001 наружу.
+#
+# Если gigachat-agent выключен / не отвечает — возвращаем 200 с {error: ...},
+# а не 502. Дашборд покажет это как обычное "AI недоступен (...)" сообщение.
+
+@app.post("/api/chat")
+async def chat_proxy(request: Request):
+    if _chat_client is None:
+        return JSONResponse({"reply": "", "tools_used": [],
+                             "error": "AI недоступен (rescue-api не готов)"})
+    try:
+        body = await request.json()
+    except Exception:
+        raise HTTPException(400, "Тело запроса должно быть JSON")
+    try:
+        r = await _chat_client.post("/chat", json=body)
+    except httpx.ConnectError:
+        return JSONResponse({"reply": "", "tools_used": [],
+                             "error": "AI недоступен (gigachat-agent не запущен)"})
+    except httpx.TimeoutException:
+        return JSONResponse({"reply": "", "tools_used": [],
+                             "error": "AI недоступен (таймаут запроса)"})
+    except httpx.HTTPError as e:
+        return JSONResponse({"reply": "", "tools_used": [],
+                             "error": f"AI недоступен (сетевая ошибка: {e})"})
+    # Агент всегда отдаёт JSON; пробрасываем как есть.
+    return JSONResponse(r.json(), status_code=r.status_code)
 
 
 # ============================================================

@@ -1,0 +1,47 @@
+### ============================================================================
+### Mesh-net Тропы — systemd-юнит для gigachat-agent (ИИ-диспетчер)
+### ============================================================================
+### Это ШАБЛОН. Не копировать в /etc/systemd/system/ напрямую — внутри есть
+### плейсхолдеры __USER__ и __REPO__, их подставит scripts/systemd/install.sh:
+###   sudo bash scripts/systemd/install.sh
+### ============================================================================
+
+[Unit]
+Description=Mesh-net Тропы — gigachat-agent (AI dispatcher with function calling)
+Documentation=file://__REPO__/services/gigachat-agent/CLAUDE.md
+# rescue-api нужен для работы инструментов (HTTP к /api/*). Если он лежит,
+# /chat будет возвращать "AI недоступен (rescue-api не отвечает)" — но
+# сам gigachat-agent поднимется, поэтому Wants/Requires не используем.
+After=network-online.target mesh-rescue-api.service
+Wants=network-online.target
+StartLimitIntervalSec=60
+StartLimitBurst=5
+
+[Service]
+Type=simple
+User=__USER__
+Group=__USER__
+
+WorkingDirectory=__REPO__/services/gigachat-agent
+ExecStart=__REPO__/services/gigachat-agent/.venv/bin/python -m gigachat_agent
+
+Restart=on-failure
+RestartSec=5
+
+StandardOutput=journal
+StandardError=journal
+
+# Биндимся только на 127.0.0.1 — наружу сервис не светится, ходит к нему
+# rescue-api как прокси. Если нужно открыть наружу для отладки — поменяй на 0.0.0.0.
+Environment="GIGACHAT_AGENT_HOST=127.0.0.1"
+Environment="GIGACHAT_AGENT_PORT=8001"
+Environment="RESCUE_API_URL=http://127.0.0.1:8000"
+Environment="LOG_LEVEL=INFO"
+
+# Authorization key читается из services/gigachat-agent/token-key.
+# При желании можно перетереть через ENV (приоритет выше файла):
+# Environment="GIGACHAT_AUTHORIZATION_KEY=MDE5..."
+# Environment="GIGACHAT_SCOPE=GIGACHAT_API_PERS"
+
+[Install]
+WantedBy=multi-user.target
