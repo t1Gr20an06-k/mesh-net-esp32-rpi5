@@ -45,5 +45,7 @@ download "$BASE/images/marker-icon-2x.png" "$IMG_DIR/marker-icon-2x.png"
 download "$BASE/images/marker-shadow.png"  "$IMG_DIR/marker-shadow.png"
 
 echo
-echo "[install] Готово. Дашборд теперь самодостаточный (только тайлы карты"
-echo "          тянутся из интернета — см. TILES_URL в app.js)."
+echo "[install] Leaflet установлен. Дашборд работает оффлайн целиком,"
+echo "          включая тайлы карты — они отдельно скачиваются скриптом:"
+echo "            python3 scripts/import_tiles/download_tiles.py --bbox ... --zoom 10-14"
+echo "          (см. scripts/import_tiles/CLAUDE.md)"

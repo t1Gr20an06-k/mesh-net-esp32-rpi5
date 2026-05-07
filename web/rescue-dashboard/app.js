@@ -27,11 +27,12 @@ const TILES_URL = '/tiles/{z}/{x}/{y}.png';
 // const TILES_URL = 'https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png';
 const TILES_ATTRIBUTION = '© <a href="https://www.openstreetmap.org/" target="_blank">OpenStreetMap</a>';
 
-// Стартовая точка карты (Москва). При наличии данных init() центрирует на
-// первого активного туриста — так что эти координаты заметны только пока
-// в БД пусто.
-const DEFAULT_CENTER = [55.75, 37.62];
-const DEFAULT_ZOOM   = 5;
+// Стартовая точка карты — окрестности Краснодара (наш тестовый район,
+// для которого скачаны оффлайн-тайлы через scripts/import_tiles/download_tiles.py).
+// При наличии активных туристов в БД init() переезжает на первого из них
+// автоматически. Если меняешь регион — синхронизируй с --bbox в скрипте скачки.
+const DEFAULT_CENTER = [45.04, 39.03];
+const DEFAULT_ZOOM   = 11;
 
 // --- Состояние приложения --------------------------------------------------
 
