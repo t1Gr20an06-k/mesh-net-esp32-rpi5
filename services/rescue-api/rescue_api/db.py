@@ -70,6 +70,12 @@ def db_write(db_path: str = DEFAULT_DB_PATH) -> Iterator[sqlite3.Connection]:
 # ============================================================
 
 def get_stats(conn: sqlite3.Connection) -> dict:
+    # ⚠ Таймстампы в БД пишутся как '2026-05-07T20:03:36Z' (см. init.sql).
+    # SQLite сравнивает строки лексикографически. datetime('now', '-X minutes')
+    # возвращает формат '2026-05-07 20:01:36' (с пробелом, без Z), а 'T' (0x54)
+    # лексикографически больше ' ' (0x20) — фильтр '> datetime(...)' окажется
+    # ИСТИНОЙ для ВСЕХ записей. Поэтому правую часть тоже формируем через
+    # strftime в формате 'T...Z'.
     row = conn.execute("""
         SELECT
             (SELECT COUNT(*) FROM pings)                                      AS pings_total,
@@ -77,7 +83,8 @@ def get_stats(conn: sqlite3.Connection) -> dict:
             (SELECT COUNT(*) FROM sos_events WHERE resolved = 0)              AS sos_open,
             (SELECT COUNT(*) FROM devices)                                    AS devices_total,
             (SELECT COUNT(*) FROM devices
-              WHERE last_seen_at > datetime('now', '-' || :m || ' minutes'))  AS devices_online
+              WHERE last_seen_at > strftime('%Y-%m-%dT%H:%M:%SZ',
+                                            'now', '-' || :m || ' minutes')) AS devices_online
     """, {"m": ACTIVE_THRESHOLD_MIN}).fetchone()
     return dict(row)
 
@@ -88,7 +95,9 @@ def get_stats(conn: sqlite3.Connection) -> dict:
 
 def list_active_tourists(conn: sqlite3.Connection) -> List[sqlite3.Row]:
     """Устройства, от которых был PING за последние ACTIVE_THRESHOLD_MIN минут.
-    Подтягиваем последний PING (координаты, RSSI, батарея)."""
+    Подтягиваем последний PING (координаты, RSSI, батарея).
+
+    Про `strftime('%Y-%m-%dT%H:%M:%SZ', ...)` — см. комментарий в get_stats."""
     return conn.execute("""
         SELECT
             d.device_id, d.name, d.channel, d.last_seen_at,
@@ -103,7 +112,8 @@ def list_active_tourists(conn: sqlite3.Connection) -> List[sqlite3.Row]:
             WHERE device_id = d.device_id
             ORDER BY id DESC LIMIT 1
         )
-        WHERE d.last_seen_at > datetime('now', '-' || :m || ' minutes')
+        WHERE d.last_seen_at > strftime('%Y-%m-%dT%H:%M:%SZ',
+                                        'now', '-' || :m || ' minutes')
         ORDER BY d.last_seen_at DESC
     """, {"m": ACTIVE_THRESHOLD_MIN}).fetchall()
 
@@ -122,16 +132,19 @@ def list_pings(
     hours: float,
     limit: int,
 ) -> List[sqlite3.Row]:
+    # См. комментарий в get_stats про strftime — формат таймстампа в БД 'T...Z'.
     if device_id is not None:
         return conn.execute("""
             SELECT * FROM pings
             WHERE device_id = :did
-              AND received_at > datetime('now', '-' || :h || ' hours')
+              AND received_at > strftime('%Y-%m-%dT%H:%M:%SZ',
+                                          'now', '-' || :h || ' hours')
             ORDER BY id DESC LIMIT :limit
         """, {"did": device_id, "h": hours, "limit": limit}).fetchall()
     return conn.execute("""
         SELECT * FROM pings
-        WHERE received_at > datetime('now', '-' || :h || ' hours')
+        WHERE received_at > strftime('%Y-%m-%dT%H:%M:%SZ',
+                                      'now', '-' || :h || ' hours')
         ORDER BY id DESC LIMIT :limit
     """, {"h": hours, "limit": limit}).fetchall()
 
