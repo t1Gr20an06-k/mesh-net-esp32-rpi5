@@ -197,6 +197,9 @@ def admin_purge(body: models.PurgeRequest):
         raise HTTPException(403, "Подтверждение не совпадает (ожидается 'ОЧИСТИТЬ')")
     with db.db_write(DB_PATH) as conn:
         deleted = db.purge_all(conn)
+    # purge_all сбросил sqlite_sequence — id пойдут от 1. Без ресета
+    # broadcaster проигнорировал бы их (1 < last_seen_id из памяти).
+    _broadcaster.reset_counters()
     log.warning("ОЧИСТКА БД: %s", deleted)
     return {"ok": True, "deleted": deleted}
 

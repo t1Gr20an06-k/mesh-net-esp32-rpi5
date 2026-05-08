@@ -118,6 +118,22 @@ class Broadcaster:
         except asyncio.TimeoutError:
             pass
 
+    # --- админ ---------------------------------------------------
+
+    def reset_counters(self) -> None:
+        """Сбрасывает last_seen_id обоих таблиц в 0. Зовётся после
+        полной очистки БД (см. db.purge_all): autoincrement сбрасывается
+        в SQLite, и следующая вставка получит id=1; без ресета
+        broadcaster пропустил бы её (1 < старый last_seen_id).
+
+        Просто int-присваивание — GIL делает его атомарным, поллер
+        в худшем случае один тик увидит "новые" строки от 0, но это
+        ровно то что нам нужно.
+        """
+        self._last_ping_id = 0
+        self._last_sos_id = 0
+        log.info("WS broadcaster: счётчики сброшены (последствие очистки БД)")
+
     # --- lifecycle -----------------------------------------------
 
     def start(self) -> None:

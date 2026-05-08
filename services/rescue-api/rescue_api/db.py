@@ -233,11 +233,11 @@ def purge_all(conn: sqlite3.Connection) -> dict:
     Порядок строгий — сначала таблицы со ссылками на devices, иначе FK.
     Возвращает {table: rowcount} для лога/ответа.
 
-    AUTOINCREMENT в sqlite_sequence НЕ сбрасываем намеренно: WS-broadcaster
-    в ws.py хранит last_seen_id с момента старта rescue-api. Если сбросим
-    счётчик и lora-station начнёт писать с id=1, broadcaster пропустит
-    новые строки (id < last_seen_id). Дав autoincrement-у продолжать —
-    новые id всегда больше старых, всё работает без перезапуска сервиса.
+    Также сбрасываем AUTOINCREMENT в sqlite_sequence — следующие id
+    пойдут от 1, а не от 5001. Чтобы при этом WS-broadcaster в ws.py
+    не пропустил новые строки (он хранит last_seen_id в памяти), его
+    нужно ресетнуть отдельно — это делает admin_purge() в app.py
+    через _broadcaster.reset_counters() сразу после этого вызова.
 
     ⚠ В sos_events лежат данные по ЧС — обычно их хранят. Эта функция
     задумана для отладки/прогонов с нуля, не для прода.
@@ -246,4 +246,14 @@ def purge_all(conn: sqlite3.Connection) -> dict:
     for table in ("pings", "sos_events", "chat_messages", "devices"):
         cur = conn.execute(f"DELETE FROM {table}")
         res[table] = cur.rowcount
+    # sqlite_sequence создаётся только если в схеме есть AUTOINCREMENT-колонки.
+    # У нас они есть (pings.id, sos_events.id, chat_messages.id), так что
+    # таблица существует. На всякий — ловим ошибку, если её нет.
+    try:
+        conn.execute(
+            "DELETE FROM sqlite_sequence "
+            "WHERE name IN ('pings','sos_events','chat_messages')"
+        )
+    except sqlite3.OperationalError:
+        pass
     return res
