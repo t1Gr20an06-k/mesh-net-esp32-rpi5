@@ -357,6 +357,50 @@ function initChat() {
     });
 }
 
+// --- Очистка БД (отладка) ---------------------------------------------------
+// Двойное подтверждение: confirm + ввод слова "ОЧИСТИТЬ". Сервер тоже
+// проверяет confirm в body — UI один без сервера базу не снесёт.
+function initPurge() {
+    const btn = $('#purge-db');
+    if (!btn) return;
+    btn.addEventListener('click', async () => {
+        if (!confirm('Удалить ВСЕ данные из БД (pings, sos, devices, chat)?\nЭто необратимо.')) {
+            return;
+        }
+        const phrase = prompt('Введи слово ОЧИСТИТЬ для подтверждения:');
+        if (phrase !== 'ОЧИСТИТЬ') {
+            alert('Подтверждение не совпало — БД не тронута.');
+            return;
+        }
+        btn.disabled = true;
+        btn.textContent = 'очистка…';
+        try {
+            const r = await fetch('/api/admin/purge', {
+                method: 'POST',
+                headers: {'Content-Type': 'application/json'},
+                body: JSON.stringify({confirm: 'ОЧИСТИТЬ'}),
+            });
+            if (!r.ok) {
+                const txt = await r.text();
+                throw new Error(`HTTP ${r.status}: ${txt}`);
+            }
+            const data = await r.json();
+            alert('Готово. Удалено:\n' + JSON.stringify(data.deleted, null, 2));
+            // Чистим состояние клиента — иначе маркеры/списки висят до WS-эвента.
+            for (const [, m] of tourMarkers) map.removeLayer(m);
+            tourMarkers.clear();
+            for (const [, m] of sosMarkers)  map.removeLayer(m);
+            sosMarkers.clear();
+            await Promise.all([refreshTourists(), refreshSos(), refreshStats()]);
+        } catch (e) {
+            alert('Ошибка: ' + e.message);
+        } finally {
+            btn.disabled = false;
+            btn.textContent = 'Очистить БД';
+        }
+    });
+}
+
 // --- Старт ------------------------------------------------------------------
 
 async function init() {
@@ -370,6 +414,7 @@ async function init() {
 
     connectWS();
     initChat();
+    initPurge();
 
     // Подстраховка: раз в 30 сек пересчитываем статы (если WS «online» молчит,
     // увидим расхождение в счётчиках).

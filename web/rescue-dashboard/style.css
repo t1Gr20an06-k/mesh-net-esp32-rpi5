@@ -116,6 +116,22 @@ aside {
     50%      { box-shadow: 0 0 0 6px rgba(220, 38, 38, 0); }
 }
 
+/* --- Админ-секция (отладка) --------------------------------------------- */
+#sidebar section.admin h2 { color: #6b7280; font-weight: 500; }
+.btn-danger {
+    width: 100%;
+    background: #3a4055;
+    color: #fca5a5;
+    border: 1px solid #7f1d1d;
+    border-radius: 4px;
+    padding: 6px 10px;
+    font-size: 12px;
+    cursor: pointer;
+    transition: background 0.15s;
+}
+.btn-danger:hover { background: #7f1d1d; color: #fff; }
+.btn-danger:disabled { opacity: 0.5; cursor: default; }
+
 /* --- Карта --------------------------------------------------------------- */
 #map { background: #0f1114; }
 

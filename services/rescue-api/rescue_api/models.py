@@ -194,3 +194,10 @@ class AckRequest(BaseModel):
 
 class ResolveRequest(BaseModel):
     notes: str = ""
+
+
+class PurgeRequest(BaseModel):
+    """Подтверждение для DELETE /api/admin/purge.
+    confirm должен быть строго равен 'ОЧИСТИТЬ' — UI вводит это вручную.
+    Защита от случайного curl и от XSS-формы где-нибудь."""
+    confirm: str

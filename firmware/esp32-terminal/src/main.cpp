@@ -74,10 +74,11 @@ static uint16_t g_seq           = 0;
 static uint32_t g_last_ping_ms  = 0;
 
 // SOS-state-machine. Меняется только в loop(); HTTP-обработчик лишь взводит флаг.
-static volatile bool g_sos_requested  = false;  // взводится из web-task
-static uint8_t       g_sos_pending    = 0;      // сколько SOS-пакетов осталось послать
-static uint32_t      g_sos_next_ms    = 0;      // когда отправить следующий
-static uint32_t      g_sos_done_until = 0;      // до этого ms показываем "done"
+static volatile bool    g_sos_requested  = false;  // взводится из web-task
+static volatile uint8_t g_sos_type       = 0;      // SosType (0=UNKNOWN..4=WEATHER), задаётся web-обработчиком
+static uint8_t          g_sos_pending    = 0;      // сколько SOS-пакетов осталось послать
+static uint32_t         g_sos_next_ms    = 0;      // когда отправить следующий
+static uint32_t         g_sos_done_until = 0;      // до этого ms показываем "done"
 
 // GPS, присылаемый браузером. Записывается из web-task, читается из loop().
 // int32 на ESP32 атомарен по чтению/записи, флаг ставится после координат.
@@ -106,15 +107,18 @@ static const char INDEX_HTML[] PROGMEM = R"HTML(
   .conn{font-size:.85em;margin-bottom:2em}
   .conn.ok{color:#81c784}
   .conn.bad{color:#e57373}
+  .sos-grid{display:flex;flex-direction:column;gap:14px;
+    width:90vw;max-width:380px;margin-top:.5em}
   button.sos{
-    width:80vw;max-width:340px;height:80vw;max-height:340px;
-    border-radius:50%;border:6px solid #b71c1c;
-    background:#d32f2f;color:#fff;font-size:3em;font-weight:bold;
-    letter-spacing:.1em;box-shadow:0 0 30px rgba(211,47,47,.6);
+    width:100%;padding:22px 12px;border-radius:18px;
+    border:5px solid #b71c1c;background:#d32f2f;color:#fff;
+    font-size:1.6em;font-weight:bold;letter-spacing:.05em;
+    box-shadow:0 0 22px rgba(211,47,47,.45);
     cursor:pointer;transition:transform .1s,background .1s;
     -webkit-tap-highlight-color:transparent;user-select:none
   }
-  button.sos:active{transform:scale(.95);background:#b71c1c}
+  button.sos .ico{font-size:1.4em;display:block;margin-bottom:4px}
+  button.sos:active{transform:scale(.97);background:#b71c1c}
   button.sos:disabled{background:#555;border-color:#333;
     box-shadow:none;color:#aaa;cursor:default}
   .status{margin-top:1.5em;min-height:1.4em;font-size:.95em;color:#ffb74d}
@@ -132,21 +136,29 @@ static const char INDEX_HTML[] PROGMEM = R"HTML(
   <div>терминал №</div>
   <div class="id">%DEVICE_ID%</div>
   <div id="conn" class="conn bad">подключение…</div>
-  <button class="sos" id="sosBtn" disabled>SOS</button>
+  <div class="sos-grid">
+    <button class="sos" data-type="1" disabled><span class="ico">🪂</span>ПАДЕНИЕ</button>
+    <button class="sos" data-type="2" disabled><span class="ico">🤕</span>МЕДИЦИНА</button>
+    <button class="sos" data-type="3" disabled><span class="ico">🧭</span>ЗАБЛУДИЛСЯ</button>
+  </div>
   <div class="status" id="status"></div>
   <div class="gps bad" id="gps">GPS: выключен</div>
   <button class="gps-btn" id="gpsBtn">включить GPS</button>
 
 <script>
-  const conn   = document.getElementById('conn');
-  const btn    = document.getElementById('sosBtn');
-  const status = document.getElementById('status');
-  const gpsEl  = document.getElementById('gps');
-  const gpsBtn = document.getElementById('gpsBtn');
+  const conn    = document.getElementById('conn');
+  const sosBtns = document.querySelectorAll('button.sos');
+  const status  = document.getElementById('status');
+  const gpsEl   = document.getElementById('gps');
+  const gpsBtn  = document.getElementById('gpsBtn');
 
-  let watchId      = null;
+  let watchId       = null;
   let lastGpsSendMs = 0;
-  let pollTimer    = null;
+  let pollTimer     = null;
+
+  function setSosEnabled(en) {
+    sosBtns.forEach(b => { b.disabled = !en; });
+  }
 
   // Простой "пинг" сервера — показывает зелёный/красный индикатор связи
   async function pingServer() {
@@ -155,11 +167,11 @@ static const char INDEX_HTML[] PROGMEM = R"HTML(
       if (!r.ok) throw new Error('http ' + r.status);
       conn.textContent = 'связь установлена';
       conn.className   = 'conn ok';
-      btn.disabled     = false;
+      setSosEnabled(true);
     } catch (e) {
       conn.textContent = 'нет связи с терминалом';
       conn.className   = 'conn bad';
-      btn.disabled     = true;
+      setSosEnabled(false);
     }
   }
 
@@ -173,25 +185,29 @@ static const char INDEX_HTML[] PROGMEM = R"HTML(
       } else if (t === 'done') {
         status.textContent = 'SOS отправлен (3 пакета)';
         clearInterval(pollTimer); pollTimer = null;
-        setTimeout(() => { btn.disabled = false; status.textContent = ''; }, 5000);
+        setTimeout(() => { setSosEnabled(true); status.textContent = ''; }, 5000);
       }
     } catch (e) { /* бывает во время handshake — следующий тик пройдёт */ }
   }
 
-  async function sendSos() {
-    btn.disabled = true;
+  // Шлём тип в body (одна цифра: 1=падение, 2=медицина, 3=заблудился).
+  // ESP32 при отсутствии/неверном body fallback-нёт в UNKNOWN (0).
+  async function sendSos(type) {
+    setSosEnabled(false);
     status.textContent = 'отправка SOS…';
     try {
-      const r = await fetch('/api/sos', {method:'POST'});
+      const r = await fetch('/api/sos', {method:'POST', body: String(type)});
       if (!r.ok) throw new Error('http ' + r.status);
       status.textContent = 'SOS принят терминалом';
       if (!pollTimer) pollTimer = setInterval(pollStatus, 300);
     } catch (e) {
       status.textContent = 'ошибка: ' + e.message;
-      btn.disabled = false;
+      setSosEnabled(true);
     }
   }
-  btn.addEventListener('click', sendSos);
+  sosBtns.forEach(b => {
+    b.addEventListener('click', () => sendSos(parseInt(b.dataset.type, 10)));
+  });
 
   function startGps() {
     if (!('geolocation' in navigator)) {
@@ -252,11 +268,20 @@ static void handle_root(HTTPRequest* /*req*/, HTTPResponse* res) {
     res->print(g_index_html.c_str());
 }
 
-static void handle_sos(HTTPRequest* /*req*/, HTTPResponse* res) {
+// POST body: одна цифра — SosType (0..4). Пустое body / мусор → UNKNOWN.
+// Тип используется только для текущего бёрста, потом сбрасывается обратно
+// в UNKNOWN при следующем POST.
+static void handle_sos(HTTPRequest* req, HTTPResponse* res) {
+    char body[8];
+    size_t n = req->readChars(body, sizeof(body) - 1);
+    body[n] = 0;
+    int t = atoi(body);
+    if (t < 0 || t > 4) t = 0;   // не угадал — пусть будет UNKNOWN
+    g_sos_type      = (uint8_t)t;
     g_sos_requested = true;
     res->setHeader("Content-Type", "text/plain; charset=utf-8");
     res->println("queued");
-    Serial.println(F("[HTTP] /api/sos: бёрст запрошен"));
+    Serial.printf("[HTTP] /api/sos: бёрст запрошен, тип=%d\n", t);
 }
 
 // POST body: "lat,lon" в десятичных градусах. Принимаем только валидные.
@@ -426,10 +451,12 @@ static void send_sos_one() {
     pkt.channel   = DEVICE_CHANNEL;
     pkt.ttl       = 3;
     fill_coords(pkt);
-    // Тип SOS пока не выбираем (на странице одна общая кнопка)
-    make_sos_payload(pkt.payload, SosType::UNKNOWN, "");
+    // Тип взвёл web-обработчик при POST /api/sos (см. handle_sos).
+    make_sos_payload(pkt.payload, (SosType)g_sos_type, "");
 
-    transmit_packet(pkt, "SOS");
+    char tag[16];
+    snprintf(tag, sizeof(tag), "SOS t=%u", g_sos_type);
+    transmit_packet(pkt, tag);
 }
 
 // ---------------------------------------------------------------------------

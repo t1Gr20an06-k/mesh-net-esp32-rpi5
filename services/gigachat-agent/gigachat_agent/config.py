@@ -148,7 +148,10 @@ def load_config() -> Config:
         model=model,
         client_id=file_client,
         timeout_sec=float(os.environ.get("GIGACHAT_TIMEOUT", "20")),
-        max_iterations=int(os.environ.get("GIGACHAT_MAX_ITER", "5")),
+        # 8, потому что на «как обстановка» модель зовёт сразу 2-3 инструмента
+        # (tourists + sos + иногда stats), потом нужны 1-2 хода на финализацию.
+        # 5 было впритык — упирались в "превышен лимит" на сложных вопросах.
+        max_iterations=int(os.environ.get("GIGACHAT_MAX_ITER", "8")),
         rescue_api_url=os.environ.get("RESCUE_API_URL", DEFAULT_RESCUE_API_URL).rstrip("/"),
         host=os.environ.get("GIGACHAT_AGENT_HOST", "127.0.0.1"),
         port=int(os.environ.get("GIGACHAT_AGENT_PORT", "8001")),

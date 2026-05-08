@@ -221,3 +221,29 @@ def get_new_sos(conn: sqlite3.Connection, since_id: int, limit: int = 100) -> Li
     return conn.execute("""
         SELECT * FROM sos_events WHERE id > ? ORDER BY id ASC LIMIT ?
     """, (since_id, limit)).fetchall()
+
+
+# ============================================================
+# Админ — полная очистка БД (для отладки)
+# ============================================================
+
+def purge_all(conn: sqlite3.Connection) -> dict:
+    """Удаляет всё: pings, sos_events, chat_messages, devices.
+
+    Порядок строгий — сначала таблицы со ссылками на devices, иначе FK.
+    Возвращает {table: rowcount} для лога/ответа.
+
+    AUTOINCREMENT в sqlite_sequence НЕ сбрасываем намеренно: WS-broadcaster
+    в ws.py хранит last_seen_id с момента старта rescue-api. Если сбросим
+    счётчик и lora-station начнёт писать с id=1, broadcaster пропустит
+    новые строки (id < last_seen_id). Дав autoincrement-у продолжать —
+    новые id всегда больше старых, всё работает без перезапуска сервиса.
+
+    ⚠ В sos_events лежат данные по ЧС — обычно их хранят. Эта функция
+    задумана для отладки/прогонов с нуля, не для прода.
+    """
+    res = {}
+    for table in ("pings", "sos_events", "chat_messages", "devices"):
+        cur = conn.execute(f"DELETE FROM {table}")
+        res[table] = cur.rowcount
+    return res
