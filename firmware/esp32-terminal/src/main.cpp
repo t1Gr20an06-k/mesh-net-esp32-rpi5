@@ -87,6 +87,13 @@ static volatile int32_t g_gps_lat_e6   = 0;
 static volatile int32_t g_gps_lon_e6   = 0;
 static volatile uint32_t g_gps_last_ms = 0;
 
+// CHAT — текст до 48 байт UTF-8 + флаг «надо отправить».
+// Записывается в handle_chat() (Core 0, web-task), читается в send_chat()
+// (Core 1, loop). Двойного запроса подряд можно не бояться — HTTPS-сервер
+// в одной задаче, обрабатывает запросы последовательно.
+static volatile bool g_chat_requested = false;
+static char          g_chat_pending[64] = {0};
+
 // ---------------------------------------------------------------------------
 // HTML-страница: тёмный фон, большая красная кнопка, GPS-блок.
 // %DEVICE_ID% подменяется при отдаче.
@@ -129,6 +136,21 @@ static const char INDEX_HTML[] PROGMEM = R"HTML(
     background:#333;color:#eee;border:1px solid #555;border-radius:6px;
     cursor:pointer}
   button.gps-btn:disabled{opacity:.5;cursor:default}
+  .chat-box{margin-top:1.6em;width:90vw;max-width:380px;
+    display:flex;flex-direction:column;gap:6px;text-align:left}
+  .chat-box h3{font-size:.9em;color:#bbb;font-weight:600;margin:0;text-align:center}
+  .chat-box textarea{padding:8px;border-radius:6px;border:1px solid #555;
+    background:#222;color:#eee;font-family:inherit;font-size:.95em;resize:vertical}
+  .chat-box textarea:focus{outline:none;border-color:#1976d2}
+  .chat-box .row{display:flex;gap:6px;align-items:center}
+  .chat-box .counter{font-size:.75em;color:#888;flex:1;text-align:left}
+  .chat-box button{padding:.55em 1em;font-size:.95em;
+    background:#1976d2;color:#fff;border:none;border-radius:6px;cursor:pointer}
+  .chat-box button:hover{background:#1565c0}
+  .chat-box button:disabled{opacity:.45;cursor:default;background:#555}
+  .chat-status{font-size:.85em;color:#bbb;min-height:1em;text-align:center}
+  .chat-status.ok{color:#81c784}
+  .chat-status.bad{color:#e57373}
 </style>
 </head>
 <body>
@@ -145,19 +167,48 @@ static const char INDEX_HTML[] PROGMEM = R"HTML(
   <div class="gps bad" id="gps">GPS: выключен</div>
   <button class="gps-btn" id="gpsBtn">включить GPS</button>
 
+  <div class="chat-box">
+    <h3>Сообщение спасателям</h3>
+    <textarea id="chatInput" rows="2" maxlength="48"
+      placeholder="до 48 байт UTF-8 (~24 рус. букв)"></textarea>
+    <div class="row">
+      <span class="counter" id="chatCounter">0 / 48</span>
+      <button id="chatBtn" disabled>отправить</button>
+    </div>
+    <div class="chat-status" id="chatStatus"></div>
+  </div>
+
 <script>
-  const conn    = document.getElementById('conn');
-  const sosBtns = document.querySelectorAll('button.sos');
-  const status  = document.getElementById('status');
-  const gpsEl   = document.getElementById('gps');
-  const gpsBtn  = document.getElementById('gpsBtn');
+  const conn        = document.getElementById('conn');
+  const sosBtns     = document.querySelectorAll('button.sos');
+  const status      = document.getElementById('status');
+  const gpsEl       = document.getElementById('gps');
+  const gpsBtn      = document.getElementById('gpsBtn');
+  const chatInput   = document.getElementById('chatInput');
+  const chatBtn     = document.getElementById('chatBtn');
+  const chatStatus  = document.getElementById('chatStatus');
+  const chatCounter = document.getElementById('chatCounter');
 
   let watchId       = null;
   let lastGpsSendMs = 0;
   let pollTimer     = null;
+  let connOk        = false;
 
+  // SOS-кнопки + кнопка чата живут от одного флага «связь есть».
+  // Чат дополнительно требует непустой текст — это решает updateChatBtn().
   function setSosEnabled(en) {
+    connOk = en;
     sosBtns.forEach(b => { b.disabled = !en; });
+    updateChatBtn();
+  }
+
+  // UTF-8 длина текста + блокировка кнопки если связи нет / текст пустой.
+  function updateChatBtn() {
+    const txt = chatInput.value;
+    const len = new TextEncoder().encode(txt).length;
+    chatCounter.textContent = len + ' / 48';
+    chatCounter.style.color = len > 48 ? '#e57373' : '#888';
+    chatBtn.disabled = !connOk || len === 0 || len > 48;
   }
 
   // Простой "пинг" сервера — показывает зелёный/красный индикатор связи
@@ -245,6 +296,42 @@ static const char INDEX_HTML[] PROGMEM = R"HTML(
   }
   gpsBtn.addEventListener('click', startGps);
 
+  // --- Чат: отправить произвольный текст одним CHAT-пакетом ---
+  // Сервер возвращает 200 как только TX поставлен в очередь. Дальше
+  // pollStatus не используем — чат не такой критичный как SOS.
+  chatInput.addEventListener('input', updateChatBtn);
+  chatInput.addEventListener('keydown', (e) => {
+    // Ctrl+Enter / Cmd+Enter — отправка. Просто Enter оставляем для переноса
+    // строки (textarea, на смартфоне с экранной клавиатурой это удобнее).
+    if (e.key === 'Enter' && (e.ctrlKey || e.metaKey)) {
+      e.preventDefault();
+      if (!chatBtn.disabled) chatBtn.click();
+    }
+  });
+  chatBtn.addEventListener('click', async () => {
+    const text = chatInput.value.trim();
+    if (!text) return;
+    chatBtn.disabled = true;
+    chatStatus.textContent = 'отправка…';
+    chatStatus.className   = 'chat-status';
+    try {
+      const r = await fetch('/api/chat', {method: 'POST', body: text});
+      if (!r.ok) throw new Error('http ' + r.status);
+      chatInput.value = '';
+      chatStatus.textContent = '✓ передано в эфир';
+      chatStatus.className   = 'chat-status ok';
+      setTimeout(() => {
+        chatStatus.textContent = '';
+        chatStatus.className   = 'chat-status';
+      }, 3000);
+    } catch (e) {
+      chatStatus.textContent = 'ошибка: ' + e.message;
+      chatStatus.className   = 'chat-status bad';
+    } finally {
+      updateChatBtn();
+    }
+  });
+
   pingServer();
   setInterval(pingServer, 5000);
 </script>
@@ -305,6 +392,37 @@ static void handle_gps(HTTPRequest* req, HTTPResponse* res) {
         res->setHeader("Content-Type", "text/plain; charset=utf-8");
         res->println("bad");
     }
+}
+
+// POST body: произвольный UTF-8 текст до 48 байт.
+// Кладём в g_chat_pending и взводим флаг — отправка пойдёт из loop().
+// Если пришёл новый текст до того как loop() забрал старый — старый
+// перезаписывается. Допустимо: пользователь нажал «отправить» дважды,
+// последнее сообщение перетёрло предыдущее.
+static void handle_chat(HTTPRequest* req, HTTPResponse* res) {
+    char body[sizeof(g_chat_pending)];
+    size_t n = req->readChars(body, sizeof(body) - 1);
+    body[n] = 0;
+
+    // Триммим хвостовые \r\n / пробелы — некоторые HTTP-клиенты добавляют.
+    while (n > 0 && (body[n-1] == '\r' || body[n-1] == '\n' ||
+                     body[n-1] == ' '  || body[n-1] == '\t')) {
+        body[--n] = 0;
+    }
+    if (n == 0) {
+        res->setStatusCode(400);
+        res->setHeader("Content-Type", "text/plain; charset=utf-8");
+        res->println("empty");
+        return;
+    }
+
+    memcpy(g_chat_pending, body, sizeof(g_chat_pending));
+    g_chat_pending[sizeof(g_chat_pending) - 1] = 0;
+    g_chat_requested = true;
+
+    res->setHeader("Content-Type", "text/plain; charset=utf-8");
+    res->println("queued");
+    Serial.printf("[HTTP] /api/chat: %u байт в очереди\n", (unsigned)n);
 }
 
 // idle | tx:N | done — простой текст для polling-а
@@ -372,6 +490,7 @@ static void web_task(void* /*arg*/) {
     g_server.registerNode(new ResourceNode("/",            "GET",  &handle_root));
     g_server.registerNode(new ResourceNode("/api/sos",     "POST", &handle_sos));
     g_server.registerNode(new ResourceNode("/api/gps",     "POST", &handle_gps));
+    g_server.registerNode(new ResourceNode("/api/chat",    "POST", &handle_chat));
     g_server.registerNode(new ResourceNode("/api/status",  "GET",  &handle_status));
     g_server.setDefaultNode(new ResourceNode("",           "GET",  &handle_404));
 
@@ -459,6 +578,23 @@ static void send_sos_one() {
     transmit_packet(pkt, tag);
 }
 
+static void send_chat() {
+    // Локальная копия — чтобы web-task не успел перетереть пока transmit идёт.
+    char text[sizeof(g_chat_pending)];
+    memcpy(text, (const void*)g_chat_pending, sizeof(text));
+    text[sizeof(text) - 1] = 0;
+
+    MeshPacket pkt;
+    pkt.type      = PacketType::CHAT;
+    pkt.device_id = DEVICE_ID;
+    pkt.channel   = DEVICE_CHANNEL;
+    pkt.ttl       = 3;
+    fill_coords(pkt);
+    make_chat_payload(pkt.payload, text);
+
+    transmit_packet(pkt, "CHAT");
+}
+
 // ---------------------------------------------------------------------------
 void setup() {
     Serial.begin(115200);
@@ -490,7 +626,7 @@ void loop() {
                       SOS_REPEAT, SOS_INTERVAL_MS);
     }
 
-    // 2. Идёт SOS-бёрст? Шлём пакеты по графику, PING-и временно тормозим
+    // 2. Идёт SOS-бёрст? Шлём пакеты по графику, всё остальное тормозим
     if (g_sos_pending > 0) {
         if ((int32_t)(now - g_sos_next_ms) >= 0) {
             send_sos_one();
@@ -502,8 +638,13 @@ void loop() {
                 Serial.println(F("[SOS] бёрст завершён"));
             }
         }
+    } else if (g_chat_requested) {
+        // 3. CHAT приоритетнее периодического PING — оператор ждёт ответа
+        g_chat_requested = false;
+        send_chat();
+        // PING следом не шлём — пусть таймер сам наступит.
     } else {
-        // 3. Обычный PING — только когда не идёт SOS
+        // 4. Обычный PING — только когда не идёт SOS и нет чат-сообщений
         if (now - g_last_ping_ms >= PING_INTERVAL_MS) {
             g_last_ping_ms = now;
             send_ping();

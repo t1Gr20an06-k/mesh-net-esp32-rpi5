@@ -181,6 +181,21 @@ def sos_resolve(sos_id: int, body: models.ResolveRequest):
 
 
 # ============================================================
+# Чат-сообщения от туристов (CHAT-пакеты от ESP32 → lora-station → БД)
+# ============================================================
+# AI-диспетчер занял POST /api/chat (это прокси на gigachat-agent),
+# поэтому tourist-чат живёт на отдельном пути /api/messages.
+# Этап А: только чтение. Этап Б добавит POST для ответов от базы.
+
+@app.get("/api/messages", response_model=list[models.ChatMessage])
+def messages(limit: int = Query(100, gt=0, le=500,
+                                description="Сколько последних сообщений вернуть")):
+    """Последние N сообщений CHAT в хронологическом порядке (старые → новые)."""
+    with db.db_read(DB_PATH) as conn:
+        return [models.ChatMessage.from_row(r) for r in db.list_chat(conn, limit)]
+
+
+# ============================================================
 # Админ — полная очистка БД (для отладки)
 # ============================================================
 # В дашборде есть кнопка «Очистить БД». UI делает confirm/prompt и шлёт

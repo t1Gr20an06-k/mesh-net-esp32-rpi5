@@ -202,13 +202,15 @@ def resolve_sos(conn: sqlite3.Connection, sos_id: int, notes: str) -> Optional[s
 # Запросы для WebSocket-поллера
 # ============================================================
 
-def get_max_ids(conn: sqlite3.Connection) -> Tuple[int, int]:
-    """Текущие MAX(id) в pings и sos_events. Используем как стартовую точку
-    для поллера: события до этих id уже в БД на момент старта rescue-api,
-    их в WS не пушим (иначе дашборд при подключении захлебнётся)."""
+def get_max_ids(conn: sqlite3.Connection) -> Tuple[int, int, int]:
+    """Текущие MAX(id) в pings, sos_events, chat_messages. Используем как
+    стартовую точку для поллера: события до этих id уже в БД на момент
+    старта rescue-api, их в WS не пушим (иначе дашборд при подключении
+    захлебнётся)."""
     p = conn.execute("SELECT IFNULL(MAX(id), 0) FROM pings").fetchone()[0]
     s = conn.execute("SELECT IFNULL(MAX(id), 0) FROM sos_events").fetchone()[0]
-    return p, s
+    c = conn.execute("SELECT IFNULL(MAX(id), 0) FROM chat_messages").fetchone()[0]
+    return p, s, c
 
 
 def get_new_pings(conn: sqlite3.Connection, since_id: int, limit: int = 100) -> List[sqlite3.Row]:
@@ -220,6 +222,33 @@ def get_new_pings(conn: sqlite3.Connection, since_id: int, limit: int = 100) -> 
 def get_new_sos(conn: sqlite3.Connection, since_id: int, limit: int = 100) -> List[sqlite3.Row]:
     return conn.execute("""
         SELECT * FROM sos_events WHERE id > ? ORDER BY id ASC LIMIT ?
+    """, (since_id, limit)).fetchall()
+
+
+# ============================================================
+# Запросы — chat_messages
+# ============================================================
+# В таблице нет колонки name, поэтому JOIN-им devices для имени
+# отправителя — фронт сразу получает "Вася (#16): привет" вместо
+# "device 16: привет".
+
+def list_chat(conn: sqlite3.Connection, limit: int = 100) -> List[sqlite3.Row]:
+    """Последние N сообщений в хронологическом порядке (старые → новые)."""
+    return conn.execute("""
+        SELECT c.*, d.name AS device_name
+        FROM chat_messages c
+        LEFT JOIN devices d ON d.device_id = c.device_id
+        ORDER BY c.id DESC
+        LIMIT :limit
+    """, {"limit": limit}).fetchall()[::-1]
+
+
+def get_new_chat(conn: sqlite3.Connection, since_id: int, limit: int = 100) -> List[sqlite3.Row]:
+    return conn.execute("""
+        SELECT c.*, d.name AS device_name
+        FROM chat_messages c
+        LEFT JOIN devices d ON d.device_id = c.device_id
+        WHERE c.id > ? ORDER BY c.id ASC LIMIT ?
     """, (since_id, limit)).fetchall()
 
 

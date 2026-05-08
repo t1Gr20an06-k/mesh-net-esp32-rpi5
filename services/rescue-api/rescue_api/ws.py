@@ -20,7 +20,7 @@ from typing import Any, Set
 from fastapi import WebSocket
 
 from . import db
-from .models import Ping, Sos
+from .models import ChatMessage, Ping, Sos
 
 log = logging.getLogger("rescue_api.ws")
 
@@ -44,6 +44,7 @@ class Broadcaster:
         self._stop = asyncio.Event()
         self._last_ping_id: int = 0
         self._last_sos_id: int = 0
+        self._last_chat_id: int = 0
 
     # --- управление подключениями --------------------------------
 
@@ -81,9 +82,11 @@ class Broadcaster:
         # (иначе свежеподключённый дашборд получит тысячи старых PING-ов).
         try:
             with db.db_read(self._db_path) as conn:
-                self._last_ping_id, self._last_sos_id = db.get_max_ids(conn)
-            log.info("WS poller старт: last_ping_id=%d last_sos_id=%d",
-                     self._last_ping_id, self._last_sos_id)
+                (self._last_ping_id,
+                 self._last_sos_id,
+                 self._last_chat_id) = db.get_max_ids(conn)
+            log.info("WS poller старт: last_ping_id=%d last_sos_id=%d last_chat_id=%d",
+                     self._last_ping_id, self._last_sos_id, self._last_chat_id)
         except Exception as exc:  # noqa: BLE001
             log.error("WS poller init FAIL: %s", exc)
             return
@@ -93,6 +96,7 @@ class Broadcaster:
                 with db.db_read(self._db_path) as conn:
                     new_pings = db.get_new_pings(conn, self._last_ping_id, BATCH_LIMIT)
                     new_sos   = db.get_new_sos(conn,   self._last_sos_id,   BATCH_LIMIT)
+                    new_chat  = db.get_new_chat(conn,  self._last_chat_id,  BATCH_LIMIT)
             except Exception as exc:  # noqa: BLE001
                 log.warning("WS poll FAIL: %s", exc)
                 # Спим интервал и пробуем снова. БД могла моргнуть на reopen WAL.
@@ -108,6 +112,11 @@ class Broadcaster:
                 await self._broadcast("sos", Sos.from_row(r).model_dump())
                 if r["id"] > self._last_sos_id:
                     self._last_sos_id = r["id"]
+
+            for r in new_chat:
+                await self._broadcast("chat", ChatMessage.from_row(r).model_dump())
+                if r["id"] > self._last_chat_id:
+                    self._last_chat_id = r["id"]
 
             await self._sleep_or_stop(POLL_INTERVAL_S)
 
@@ -132,6 +141,7 @@ class Broadcaster:
         """
         self._last_ping_id = 0
         self._last_sos_id = 0
+        self._last_chat_id = 0
         log.info("WS broadcaster: счётчики сброшены (последствие очистки БД)")
 
     # --- lifecycle -----------------------------------------------

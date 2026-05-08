@@ -44,6 +44,8 @@ const sosMarkers  = new Map();   // sos_id    -> L.circleMarker
 
 let touristsCache = [];
 let sosCache = [];
+let tourMessagesCache = [];
+let lastTourMsgId = 0;
 
 let ws = null;
 let wsReconnectTimer = null;
@@ -212,6 +214,71 @@ async function refreshSos() {
     }
 }
 
+// --- Чат с туристами (CHAT-пакеты от ESP32) -------------------------------
+// Полностью отдельная панель снизу — НЕ путать с AI-диспетчером выше.
+// На этапе А — только чтение. На этапе Б добавится отправка ответов от базы.
+
+function tourMsgBubble(m) {
+    // Что показываем как имя: предпочитаем devices.name, иначе "Device <id>".
+    // Когда в этап Б появятся сообщения от самой базы — отметим их отдельно.
+    const name = m.device_name || `Device ${m.device_id}`;
+    const div = document.createElement('div');
+    div.className = 'tour-msg';
+    const who = document.createElement('div');
+    who.className = 'who';
+    who.textContent = `${name} · #${m.device_id}`;
+    const body = document.createElement('div');
+    body.textContent = m.message;
+    const when = document.createElement('div');
+    when.className = 'when';
+    when.textContent = fmtTime(m.received_at);
+    div.append(who, body, when);
+    return div;
+}
+
+function appendTourMessage(m) {
+    if (m.id <= lastTourMsgId) return;          // дедуп: WS+refresh могут дублировать
+    lastTourMsgId = m.id;
+    tourMessagesCache.push(m);
+    const log = $('#tour-chat-log');
+    // На первом сообщении — убираем placeholder «загрузка истории…»
+    const placeholder = log.querySelector('.chat-system');
+    if (placeholder) placeholder.remove();
+    log.appendChild(tourMsgBubble(m));
+    log.scrollTop = log.scrollHeight;
+    $('#tour-chat-count').textContent = tourMessagesCache.length;
+}
+
+async function refreshTourChat() {
+    try {
+        const r = await fetch('/api/messages?limit=100');
+        const list = await r.json();
+        tourMessagesCache = list;
+        // После purge на сервере sqlite_sequence сбрасывается и id пойдут от 1.
+        // Если бы lastTourMsgId остался большим, новые сообщения не пройдут
+        // через дедуп appendTourMessage. Сбрасываем здесь, дальше в цикле
+        // обновим до фактического MAX(id).
+        lastTourMsgId = 0;
+        const log = $('#tour-chat-log');
+        log.innerHTML = '';
+        if (list.length === 0) {
+            const empty = document.createElement('div');
+            empty.className = 'chat-msg chat-system';
+            empty.textContent = 'пока нет сообщений';
+            log.appendChild(empty);
+        } else {
+            for (const m of list) {
+                log.appendChild(tourMsgBubble(m));
+                if (m.id > lastTourMsgId) lastTourMsgId = m.id;
+            }
+            log.scrollTop = log.scrollHeight;
+        }
+        $('#tour-chat-count').textContent = list.length;
+    } catch (e) {
+        console.warn('refreshTourChat fail', e);
+    }
+}
+
 async function refreshStats() {
     try {
         const r = await fetch('/api/stats');
@@ -255,6 +322,9 @@ function connectWS() {
         } else if (msg.event === 'sos') {
             refreshSos();
             refreshStats();
+        } else if (msg.event === 'chat') {
+            // У сообщений нет агрегации — просто дописываем в DOM по одному.
+            appendTourMessage(msg.data);
         }
     };
 }
@@ -368,6 +438,15 @@ const TABLE_LABELS = {
     devices:        'устройства (+ всё что на них ссылается)',
 };
 
+// На этапе А форма tour-chat в read-only состоянии (textarea+кнопка disabled
+// в HTML). Перехватываем submit на всякий случай — браузер всё равно может
+// отправить форму при Enter в фокусе на каком-нибудь скрытом поле.
+function initTourChat() {
+    const form = $('#tour-chat-form');
+    if (!form) return;
+    form.addEventListener('submit', (e) => e.preventDefault());
+}
+
 function initPurge() {
     const btn = $('#purge-db');
     if (!btn) return;
@@ -405,7 +484,7 @@ function initPurge() {
             tourMarkers.clear();
             for (const [, m] of sosMarkers)  map.removeLayer(m);
             sosMarkers.clear();
-            await Promise.all([refreshTourists(), refreshSos(), refreshStats()]);
+            await Promise.all([refreshTourists(), refreshSos(), refreshStats(), refreshTourChat()]);
         } catch (e) {
             alert('Ошибка: ' + e.message);
         } finally {
@@ -418,7 +497,7 @@ function initPurge() {
 // --- Старт ------------------------------------------------------------------
 
 async function init() {
-    await Promise.all([refreshTourists(), refreshSos(), refreshStats()]);
+    await Promise.all([refreshTourists(), refreshSos(), refreshStats(), refreshTourChat()]);
 
     // Если есть активные туристы с GPS — центруем карту на первом из них.
     const withPos = touristsCache.find(t => hasFix(t.position));
@@ -428,6 +507,7 @@ async function init() {
 
     connectWS();
     initChat();
+    initTourChat();
     initPurge();
 
     // Подстраховка: раз в 30 сек пересчитываем статы (если WS «online» молчит,

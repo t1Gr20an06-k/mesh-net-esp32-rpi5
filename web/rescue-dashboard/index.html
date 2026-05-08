@@ -47,23 +47,39 @@
         <div id="map"></div>
 
         <aside id="chat-panel">
-            <div id="chat-header">
-                <h2>ИИ-диспетчер</h2>
-                <button id="chat-clear" type="button" title="Очистить историю">✕</button>
-            </div>
-            <div id="chat-log">
-                <div class="chat-msg chat-system">
-                    Спрашивай по-русски. Примеры:
-                    «кто сейчас в эфире?», «есть ли открытые SOS?»,
-                    «трек устройства 16 за последний час».
+            <section class="ai-chat">
+                <div id="chat-header">
+                    <h2>ИИ-диспетчер</h2>
+                    <button id="chat-clear" type="button" title="Очистить историю">✕</button>
                 </div>
-            </div>
-            <form id="chat-form">
-                <textarea id="chat-input" rows="2"
-                          placeholder="Сообщение… (Enter — отправить, Shift+Enter — новая строка)"
-                          maxlength="2000"></textarea>
-                <button type="submit" id="chat-send">→</button>
-            </form>
+                <div id="chat-log">
+                    <div class="chat-msg chat-system">
+                        Спрашивай по-русски. Примеры:
+                        «кто сейчас в эфире?», «есть ли открытые SOS?»,
+                        «трек устройства 16 за последний час».
+                    </div>
+                </div>
+                <form id="chat-form">
+                    <textarea id="chat-input" rows="2"
+                              placeholder="Сообщение… (Enter — отправить, Shift+Enter — новая строка)"
+                              maxlength="2000"></textarea>
+                    <button type="submit" id="chat-send">→</button>
+                </form>
+            </section>
+
+            <section class="tour-chat">
+                <div id="tour-chat-header">
+                    <h2>Чат с туристами <span id="tour-chat-count" class="badge">0</span></h2>
+                </div>
+                <div id="tour-chat-log">
+                    <div class="chat-msg chat-system">загрузка истории…</div>
+                </div>
+                <form id="tour-chat-form">
+                    <textarea id="tour-chat-input" rows="2" disabled
+                              placeholder="Ответ туристу — будет доступен на этапе Б"></textarea>
+                    <button type="submit" id="tour-chat-send" disabled>→</button>
+                </form>
+            </section>
         </aside>
     </main>
 

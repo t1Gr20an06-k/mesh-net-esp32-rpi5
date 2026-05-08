@@ -165,8 +165,8 @@ aside {
 .leaflet-container { font-family: inherit; }
 
 /* --- Чат-панель ----------------------------------------------------------
-   Колонка из трёх рядов: header / scroll-log / form. Поэтому нужен flex
-   и overflow-y только у среднего ряда — иначе input уезжает за экран.
+   Содержит две секции по высоте 50/50: AI-диспетчер сверху, чат с туристами
+   снизу. Каждая секция — мини-флекс header/log/form, log с overflow-y.
    ------------------------------------------------------------------------- */
 #chat-panel {
     display: flex;
@@ -175,7 +175,18 @@ aside {
     overflow: hidden;
 }
 
-#chat-header {
+.ai-chat,
+.tour-chat {
+    flex: 1 1 0;
+    min-height: 0;          /* без этого внутренний log не скроллится */
+    display: flex;
+    flex-direction: column;
+    overflow: hidden;
+}
+.tour-chat { border-top: 2px solid #3a4055; }
+
+#chat-header,
+#tour-chat-header {
     display: flex;
     align-items: center;
     justify-content: space-between;
@@ -183,7 +194,8 @@ aside {
     border-bottom: 1px solid #3a4055;
     flex-shrink: 0;
 }
-#chat-header h2 { font-size: 14px; }
+#chat-header h2,
+#tour-chat-header h2 { font-size: 14px; }
 #chat-clear {
     background: transparent;
     border: 1px solid #3a4055;
@@ -197,7 +209,8 @@ aside {
 }
 #chat-clear:hover { background: #3a4055; color: #fff; }
 
-#chat-log {
+#chat-log,
+#tour-chat-log {
     flex: 1;
     overflow-y: auto;
     padding: 10px;
@@ -255,7 +268,8 @@ aside {
     font-family: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
 }
 
-#chat-form {
+#chat-form,
+#tour-chat-form {
     display: flex;
     gap: 6px;
     padding: 8px;
@@ -263,7 +277,8 @@ aside {
     flex-shrink: 0;
     background: #1e2230;
 }
-#chat-input {
+#chat-input,
+#tour-chat-input {
     flex: 1;
     background: #0f1114;
     color: #e6e6e6;
@@ -275,8 +290,15 @@ aside {
     resize: none;
     outline: none;
 }
-#chat-input:focus { border-color: #2563eb; }
-#chat-send {
+#chat-input:focus,
+#tour-chat-input:focus { border-color: #2563eb; }
+#tour-chat-input:disabled,
+#tour-chat-send:disabled {
+    opacity: 0.55;
+    cursor: not-allowed;
+}
+#chat-send,
+#tour-chat-send {
     background: #2563eb;
     color: #fff;
     border: none;
@@ -286,5 +308,33 @@ aside {
     font-size: 16px;
     font-weight: 600;
 }
-#chat-send:hover { background: #1d4ed8; }
+#chat-send:hover,
+#tour-chat-send:hover:not(:disabled) { background: #1d4ed8; }
 #chat-send:disabled { background: #3a4055; cursor: not-allowed; }
+
+/* --- Сообщения от туристов (отличить от AI-чата другим цветом) ----------- */
+.tour-msg {
+    background: #1e3a5f;
+    color: #e6e6e6;
+    align-self: flex-start;
+    border-bottom-left-radius: 2px;
+    padding: 8px 10px;
+    border-radius: 8px;
+    font-size: 13px;
+    line-height: 1.4;
+    max-width: 92%;
+    word-wrap: break-word;
+    white-space: pre-wrap;
+}
+.tour-msg .who {
+    font-size: 11px;
+    color: #93c5fd;
+    font-weight: 600;
+    margin-bottom: 3px;
+}
+.tour-msg .when {
+    font-size: 10px;
+    color: #6b7280;
+    margin-top: 4px;
+    font-family: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+}

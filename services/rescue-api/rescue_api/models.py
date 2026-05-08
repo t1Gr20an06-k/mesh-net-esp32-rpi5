@@ -177,6 +177,50 @@ class Sos(BaseModel):
 
 
 # ============================================================
+# ChatMessage — одна строка из таблицы chat_messages
+# ============================================================
+# device_name достаётся JOIN-ом из devices; пустое имя — оставляем "",
+# дашборд сам подставит "Device <id>".
+
+class ChatMessage(BaseModel):
+    id: int
+    device_id: int
+    device_name: str
+    received_at: str
+    position: Optional[Position]
+    channel: int
+    channel_label: str
+    message: str
+
+    @classmethod
+    def from_row(cls, row) -> "ChatMessage":
+        lat = _coord(row["latitude"])
+        lon = _coord(row["longitude"])
+        # (0, 0) — нет GPS-фикса. Не отдаём как Position, чтобы фронт не пытался
+        # рисовать сообщение на карте у Гринвича.
+        pos = (Position(lat=lat, lon=lon)
+               if lat is not None and lon is not None and (lat != 0 or lon != 0)
+               else None)
+        ch = row["channel"]
+        # device_name появляется только из JOIN (см. db.list_chat). Если row
+        # без него — fallback в пустую строку.
+        try:
+            name = row["device_name"] or ""
+        except (KeyError, IndexError):
+            name = ""
+        return cls(
+            id=row["id"],
+            device_id=row["device_id"],
+            device_name=name,
+            received_at=row["received_at"],
+            position=pos,
+            channel=ch,
+            channel_label=CHANNEL_LABELS.get(ch, "?"),
+            message=row["message"] or "",
+        )
+
+
+# ============================================================
 # Stats / запросы
 # ============================================================
 
