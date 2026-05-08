@@ -60,8 +60,13 @@ function setWsStatus(state) {
 
 function fmtTime(iso) {
     if (!iso) return '—';
-    // ISO от sqlite вида "2026-05-06T12:34:56" — берём только HH:MM:SS
-    return iso.replace('T', ' ').slice(11, 19) || iso;
+    // В БД таймстампы в UTC ('2026-05-08T16:57:56Z'). Если 'Z' или
+    // смещение пропущены — добавим, иначе Date() трактует строку как
+    // локальное время и оператор в Москве увидит UTC-часы.
+    const s = /Z$|[+-]\d\d:?\d\d$/.test(iso) ? iso : iso + 'Z';
+    const d = new Date(s);
+    if (isNaN(d.getTime())) return iso;
+    return d.toLocaleTimeString('ru-RU', { hour12: false });
 }
 
 function batteryStr(pct) {
