@@ -240,6 +240,14 @@ class ResolveRequest(BaseModel):
     notes: str = ""
 
 
+class ChatSendRequest(BaseModel):
+    """POST /api/messages — ответ оператора туристу.
+
+    Длина сообщения валидируется на уровне эндпоинта:
+    максимум 48 байт UTF-8 (это размер CHAT-payload в LoRa-пакете)."""
+    text: str
+
+
 class PurgeRequest(BaseModel):
     """Тело POST /api/admin/purge.
 

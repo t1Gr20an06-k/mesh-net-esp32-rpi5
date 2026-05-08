@@ -24,7 +24,10 @@ import time
 from .db import Database, DEFAULT_DB_PATH
 from .dispatcher import Dispatcher
 from .mesh import DedupCache, TxQueue
-from .packet import PACKET_SIZE, decode
+from .packet import (
+    PACKET_SIZE, Channel, MeshPacket, PacketType,
+    decode, make_chat_payload,
+)
 from .sx1262 import SX1262, Pins
 
 log = logging.getLogger("lora_station")
@@ -127,6 +130,15 @@ def main() -> int:
     rx_count = 0
     crc_bad  = 0
 
+    # Outbox poll: раз в OUTBOX_POLL_S вычитываем outgoing_chat и кладём в TxQueue.
+    # 1 сек хватает с запасом — оператор не ждёт мгновенной доставки на туриста,
+    # а более частый poll просто грузит SQLite без пользы.
+    OUTBOX_POLL_S = 1.0
+    last_outbox_t = 0.0
+    # Свои собственные id — чтобы не «принимать» эхо от ретранслятора (см.
+    # фильтр в Dispatcher). База от себя в эфир ничего не пишет в БД, но
+    # лора-станция инфо-точки услышит и попытается ретранслировать.
+
     # Watchdog-диагностика: раз в 5 сек проверяем что чип всё ещё в RX
     # и нет ошибок. В норме — молчим. На аномалии — WARNING (виден всегда,
     # не только в -v). Полезно: если чип молча выпадет из RX (например,
@@ -150,6 +162,37 @@ def main() -> int:
                                     _MODE_NAMES.get(mode, f"?{mode}"), cmd_st, errs)
                 except Exception as exc:  # noqa: BLE001
                     log.warning("[diag] FAIL: %s", exc)
+            # Outbox: достаём pending-сообщения и собираем CHAT-пакеты от
+            # имени NODE_DEVICE_ID. Координаты у базы (0, 0) — она стационарна.
+            if now - last_outbox_t >= OUTBOX_POLL_S:
+                last_outbox_t = now
+                try:
+                    pending = db.fetch_pending_outgoing_chat(limit=5)
+                except Exception as exc:  # noqa: BLE001
+                    log.warning("outbox fetch FAIL: %s", exc)
+                    pending = []
+                for row_id, message in pending:
+                    pkt = MeshPacket(
+                        type=PacketType.CHAT,
+                        device_id=node_id,
+                        channel=Channel.TOURIST,  # общий канал — слышат все ESP32
+                        ttl=3,
+                        latitude=0,
+                        longitude=0,
+                        payload=make_chat_payload(message),
+                    )
+                    # tx_q.push сама вычислит приоритет (PRIO_CHAT) и закодирует.
+                    if tx_q.push(pkt):
+                        try:
+                            db.mark_outgoing_chat_sent(row_id)
+                        except Exception as exc:  # noqa: BLE001
+                            log.warning("outbox mark_sent FAIL id=%d: %s", row_id, exc)
+                        log.info("[OUTBOX] CHAT id=%d → TxQueue (msg=%r)", row_id, message[:32])
+                    else:
+                        # Очередь полная — попробуем на следующем тике, sent_at не трогаем.
+                        log.warning("[OUTBOX] TX-очередь полная, оставляем id=%d на потом", row_id)
+                        break
+
             # Ждём IRQ ≤ 200 мс, чтобы регулярно проверять TX-очередь.
             got_irq = radio.wait_rx(timeout_s=0.2)
 

@@ -36,6 +36,7 @@
                     <label><input type="checkbox" name="purge" value="pings"        checked> PING-и (треки)</label>
                     <label><input type="checkbox" name="purge" value="sos_events"          > SOS-инциденты</label>
                     <label><input type="checkbox" name="purge" value="chat_messages"       > чат-сообщения</label>
+                    <label><input type="checkbox" name="purge" value="outgoing_chat"       > очередь ответов <span class="muted">(не отправленные)</span></label>
                     <label><input type="checkbox" name="purge" value="devices"             > устройства <span class="muted">(тащит за собой остальное)</span></label>
                 </div>
                 <button id="purge-db" type="button" class="btn-danger">
@@ -75,9 +76,9 @@
                     <div class="chat-msg chat-system">загрузка истории…</div>
                 </div>
                 <form id="tour-chat-form">
-                    <textarea id="tour-chat-input" rows="2" disabled
-                              placeholder="Ответ туристу — будет доступен на этапе Б"></textarea>
-                    <button type="submit" id="tour-chat-send" disabled>→</button>
+                    <textarea id="tour-chat-input" rows="2" maxlength="200"
+                              placeholder="Ответ туристам… (≤48 байт UTF-8 — это ~24 русских буквы. Enter — отправить)"></textarea>
+                    <button type="submit" id="tour-chat-send">→</button>
                 </form>
             </section>
         </aside>

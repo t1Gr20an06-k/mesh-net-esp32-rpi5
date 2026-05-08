@@ -243,6 +243,57 @@ def list_chat(conn: sqlite3.Connection, limit: int = 100) -> List[sqlite3.Row]:
     """, {"limit": limit}).fetchall()[::-1]
 
 
+# --- запись от базы (этап Б чата): сообщение оператора в эфир ---
+# rescue-api использует две вставки в одной транзакции:
+#   1. chat_messages — чтобы дашборд сразу увидел в WS push'е
+#   2. outgoing_chat — очередь для lora-station, она это вычитает и передаст
+# device_id у сообщения = NODE_DEVICE_ID базы (по умолчанию 0x0001).
+# Чтобы FK chat_messages.device_id → devices не упал, гарантируем запись в devices.
+
+def ensure_base_device(
+    conn: sqlite3.Connection,
+    device_id: int,
+    name: str = "База спасателей",
+    channel: int = 1,  # RESCUE
+) -> None:
+    """Создаёт запись в devices для базы, если её ещё нет. Идемпотентно.
+    Без этого первый POST /api/messages упадёт с FOREIGN KEY constraint:
+    у chat_messages.device_id есть REFERENCES devices(device_id)."""
+    conn.execute("""
+        INSERT INTO devices (device_id, name, channel, last_latitude, last_longitude)
+        VALUES (:id, :name, :ch, 0, 0)
+        ON CONFLICT(device_id) DO NOTHING
+    """, {"id": device_id, "name": name, "ch": channel})
+
+
+def insert_base_chat(
+    conn: sqlite3.Connection,
+    base_device_id: int,
+    message: str,
+) -> int:
+    """Запись chat_messages от базы (без координат). Возвращает id новой строки.
+    Поднимет WS event 'chat' → дашборд увидит ответ в общей ленте."""
+    cur = conn.execute("""
+        INSERT INTO chat_messages (device_id, latitude, longitude, channel, message)
+        VALUES (:id, 0, 0, 0, :msg)
+    """, {"id": base_device_id, "msg": message})
+    return cur.lastrowid
+
+
+def insert_outgoing_chat(
+    conn: sqlite3.Connection,
+    message: str,
+    chat_message_id: Optional[int] = None,
+) -> int:
+    """Поставить сообщение в очередь outgoing_chat. lora-station периодически
+    вычитывает её и шлёт в эфир."""
+    cur = conn.execute("""
+        INSERT INTO outgoing_chat (message, chat_message_id)
+        VALUES (:msg, :cid)
+    """, {"msg": message, "cid": chat_message_id})
+    return cur.lastrowid
+
+
 def get_new_chat(conn: sqlite3.Connection, since_id: int, limit: int = 100) -> List[sqlite3.Row]:
     return conn.execute("""
         SELECT c.*, d.name AS device_name
@@ -256,7 +307,7 @@ def get_new_chat(conn: sqlite3.Connection, since_id: int, limit: int = 100) -> L
 # Админ — полная очистка БД (для отладки)
 # ============================================================
 
-PURGEABLE_TABLES = ("pings", "sos_events", "chat_messages", "devices")
+PURGEABLE_TABLES = ("pings", "sos_events", "chat_messages", "outgoing_chat", "devices")
 
 
 def purge_tables(conn: sqlite3.Connection, tables: list[str]) -> dict:
@@ -283,18 +334,22 @@ def purge_tables(conn: sqlite3.Connection, tables: list[str]) -> dict:
         raise ValueError(f"неизвестные таблицы: {sorted(bad)}")
 
     # FK-каскад: devices обязан тащить за собой всех детей.
+    # outgoing_chat не имеет FK на devices, но логически тоже относится к чатам —
+    # при тотальной очистке устройств чистим и его, чтобы не остался хвост
+    # неотправленных сообщений «в никуда».
     if "devices" in requested:
-        requested |= {"pings", "sos_events", "chat_messages"}
+        requested |= {"pings", "sos_events", "chat_messages", "outgoing_chat"}
 
     # Порядок строгий — сначала «дети», потом «родители».
+    # outgoing_chat без FK, но ставим перед chat_messages для консистентности.
     res: dict[str, int] = {}
-    for table in ("pings", "sos_events", "chat_messages", "devices"):
+    for table in ("pings", "sos_events", "outgoing_chat", "chat_messages", "devices"):
         if table in requested:
             cur = conn.execute(f"DELETE FROM {table}")
             res[table] = cur.rowcount
 
     # sqlite_sequence существует только для AUTOINCREMENT-таблиц.
-    seq = [t for t in requested if t in ("pings", "sos_events", "chat_messages")]
+    seq = [t for t in requested if t in ("pings", "sos_events", "chat_messages", "outgoing_chat")]
     if seq:
         placeholders = ",".join("?" for _ in seq)
         try:

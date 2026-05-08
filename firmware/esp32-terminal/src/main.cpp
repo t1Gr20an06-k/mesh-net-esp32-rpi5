@@ -94,6 +94,76 @@ static volatile uint32_t g_gps_last_ms = 0;
 static volatile bool g_chat_requested = false;
 static char          g_chat_pending[64] = {0};
 
+// --- RX (приём пакетов) ---------------------------------------------------
+// SX1262 → DIO1 (RX_DONE) → ISR ставит флаг → loop() читает пакет
+// и обрабатывает CHAT-сообщения (от базы или других туристов).
+static volatile bool g_rx_flag = false;
+static IRAM_ATTR void on_rx_done() { g_rx_flag = true; }
+
+// id базы (= NODE_DEVICE_ID lora-station). От неё приходят ответы оператора —
+// показываем красным «Спасатели:», от других туристов — «Турист #N».
+static const uint16_t BASE_DEVICE_ID = 0x0001;
+
+// Дедуп ретрансляций: один и тот же CHAT придёт напрямую И через ретранслятор
+// (с TTL−1). Без фильтра пользователь увидит N копий «дошли до приюта».
+// Окно 30 сек — за это время бёрст ретрансляций гарантированно отстреляется.
+struct RecentRx { uint16_t from_id; uint32_t hash; uint32_t ms; };
+static const uint8_t RECENT_RX_SIZE = 4;
+static RecentRx g_recent_rx[RECENT_RX_SIZE] = {};
+static uint8_t  g_recent_rx_idx = 0;
+
+static uint32_t hash_payload(const uint8_t* data, size_t len) {
+    // FNV-1a 32-bit. Хорошо рассеивает короткие строки, реализация в одну строку.
+    uint32_t h = 2166136261u;
+    for (size_t i = 0; i < len; i++) { h ^= data[i]; h *= 16777619u; }
+    return h;
+}
+
+static bool seen_recently(uint16_t from, uint32_t hash) {
+    uint32_t now = millis();
+    for (uint8_t i = 0; i < RECENT_RX_SIZE; i++) {
+        if (g_recent_rx[i].from_id == from &&
+            g_recent_rx[i].hash    == hash &&
+            (now - g_recent_rx[i].ms) < 30000) {
+            return true;
+        }
+    }
+    g_recent_rx[g_recent_rx_idx] = { from, hash, now };
+    g_recent_rx_idx = (g_recent_rx_idx + 1) % RECENT_RX_SIZE;
+    return false;
+}
+
+// --- Inbox: входящие CHAT-сообщения ---------------------------------------
+// Кольцевой буфер. id монотонно растёт; страница знает свой last_id и
+// тащит /api/inbox?since=last_id раз в 5 сек.
+struct InboxMsg {
+    uint32_t id;
+    uint16_t from_id;
+    uint32_t received_ms;       // millis() на момент приёма
+    char     text[MESH_PAYLOAD_SIZE + 1];   // 48 + терминатор
+};
+static const uint8_t INBOX_SIZE = 8;
+static InboxMsg g_inbox[INBOX_SIZE] = {};
+static uint8_t  g_inbox_pos = 0;
+static uint32_t g_inbox_last_id = 0;
+
+// Mutex для работы с g_inbox: пишет loop() (Core 1), читает handle_inbox
+// (Core 0). portMUX_TYPE — самая лёгкая критическая секция в FreeRTOS.
+static portMUX_TYPE g_inbox_mux = portMUX_INITIALIZER_UNLOCKED;
+
+static void inbox_push(uint16_t from, const char* text) {
+    portENTER_CRITICAL(&g_inbox_mux);
+    g_inbox_last_id++;
+    InboxMsg& m = g_inbox[g_inbox_pos];
+    m.id          = g_inbox_last_id;
+    m.from_id     = from;
+    m.received_ms = millis();
+    strncpy(m.text, text, sizeof(m.text) - 1);
+    m.text[sizeof(m.text) - 1] = 0;
+    g_inbox_pos = (g_inbox_pos + 1) % INBOX_SIZE;
+    portEXIT_CRITICAL(&g_inbox_mux);
+}
+
 // ---------------------------------------------------------------------------
 // HTML-страница: тёмный фон, большая красная кнопка, GPS-блок.
 // %DEVICE_ID% подменяется при отдаче.
@@ -151,6 +221,20 @@ static const char INDEX_HTML[] PROGMEM = R"HTML(
   .chat-status{font-size:.85em;color:#bbb;min-height:1em;text-align:center}
   .chat-status.ok{color:#81c784}
   .chat-status.bad{color:#e57373}
+  .inbox-box{margin-top:1.6em;width:90vw;max-width:380px;text-align:left}
+  .inbox-box h3{font-size:.9em;color:#bbb;font-weight:600;margin:0 0 .4em;text-align:center}
+  .inbox-list{display:flex;flex-direction:column;gap:6px;max-height:240px;
+    overflow-y:auto;padding-right:4px}
+  .inbox-empty{font-size:.85em;color:#666;font-style:italic;text-align:center;
+    padding:.6em 0}
+  .inbox-msg{padding:8px 10px;border-radius:8px;font-size:.9em;line-height:1.35;
+    background:#262626;border-left:3px solid #555;word-break:break-word;
+    white-space:pre-wrap}
+  .inbox-msg.from-base{border-left-color:#fbc02d;background:#3a2a0e}
+  .inbox-msg .who{font-size:.7em;font-weight:600;color:#bbb;margin-bottom:3px}
+  .inbox-msg.from-base .who{color:#ffca28}
+  .inbox-msg .when{font-size:.7em;color:#777;margin-top:3px;
+    font-family:ui-monospace,monospace}
 </style>
 </head>
 <body>
@@ -176,6 +260,13 @@ static const char INDEX_HTML[] PROGMEM = R"HTML(
       <button id="chatBtn" disabled>отправить</button>
     </div>
     <div class="chat-status" id="chatStatus"></div>
+  </div>
+
+  <div class="inbox-box">
+    <h3>Сообщения от базы</h3>
+    <div id="inboxList" class="inbox-list">
+      <div class="inbox-empty">пока нет сообщений</div>
+    </div>
   </div>
 
 <script>
@@ -332,6 +423,68 @@ static const char INDEX_HTML[] PROGMEM = R"HTML(
     }
   });
 
+  // --- Inbox: polling входящих CHAT-сообщений (от базы или других туристов) ---
+  // Дёргаем /api/inbox?since=last каждые 5 сек. Если ESP32 рестартанул —
+  // его счётчик начнётся с 1, а наш last в браузере остался большим: тогда
+  // сбрасываем last на 0 и подгружаем заново.
+  const inboxList = document.getElementById('inboxList');
+  let inboxLastId = 0;
+
+  function fmtAge(ms) {
+    const s = Math.floor(ms / 1000);
+    if (s < 60)   return s + ' сек назад';
+    if (s < 3600) return Math.floor(s / 60) + ' мин назад';
+    return Math.floor(s / 3600) + ' ч назад';
+  }
+
+  function whoLabel(from) {
+    if (from === 1) return '🛟 База спасателей';
+    return 'Турист #' + from;
+  }
+
+  function renderInbox(messages) {
+    // Очистим placeholder при первом сообщении
+    const empty = inboxList.querySelector('.inbox-empty');
+    if (empty && messages.length) empty.remove();
+    for (const m of messages) {
+      const div = document.createElement('div');
+      div.className = 'inbox-msg' + (m.from === 1 ? ' from-base' : '');
+      const who = document.createElement('div');
+      who.className = 'who';
+      who.textContent = whoLabel(m.from);
+      const body = document.createElement('div');
+      body.textContent = m.text;
+      const when = document.createElement('div');
+      when.className = 'when';
+      when.textContent = fmtAge(m.age_ms);
+      div.append(who, body, when);
+      inboxList.appendChild(div);
+    }
+    if (messages.length) inboxList.scrollTop = inboxList.scrollHeight;
+  }
+
+  async function pollInbox() {
+    try {
+      const r = await fetch('/api/inbox?since=' + inboxLastId, {cache:'no-store'});
+      if (!r.ok) return;
+      const data = await r.json();
+      // ESP32 перезагрузился? latest «съехал» назад — заново подтянем всё.
+      if (typeof data.latest === 'number' && data.latest < inboxLastId) {
+        inboxLastId = 0;
+        inboxList.innerHTML = '<div class="inbox-empty">пока нет сообщений</div>';
+        return;
+      }
+      if (Array.isArray(data.messages) && data.messages.length) {
+        renderInbox(data.messages);
+        for (const m of data.messages) {
+          if (m.id > inboxLastId) inboxLastId = m.id;
+        }
+      }
+    } catch (e) { /* следующий тик попробует снова */ }
+  }
+  pollInbox();
+  setInterval(pollInbox, 5000);
+
   pingServer();
   setInterval(pingServer, 5000);
 </script>
@@ -425,6 +578,71 @@ static void handle_chat(HTTPRequest* req, HTTPResponse* res) {
     Serial.printf("[HTTP] /api/chat: %u байт в очереди\n", (unsigned)n);
 }
 
+// Минимальное JSON-экранирование строки в существующий String.
+// UTF-8 байты ≥ 0x80 — это валидный JSON, ничего не делаем; экранируем
+// только ", \\, контрольные символы.
+static void json_append_escaped(String& out, const char* s) {
+    for (const unsigned char* p = (const unsigned char*)s; *p; p++) {
+        if (*p == '"')      out += "\\\"";
+        else if (*p == '\\') out += "\\\\";
+        else if (*p == '\n') out += "\\n";
+        else if (*p == '\r') out += "\\r";
+        else if (*p == '\t') out += "\\t";
+        else if (*p < 0x20) {
+            char buf[8];
+            snprintf(buf, sizeof(buf), "\\u%04X", *p);
+            out += buf;
+        }
+        else out += (char)*p;
+    }
+}
+
+// GET /api/inbox?since=N → JSON-список сообщений с id > N.
+// Страница в браузере держит свой last_id и опрашивает раз в 5 сек.
+// Возвращаем максимум INBOX_SIZE записей (буфер кольцевой, старые
+// перезаписываются — это допустимо: оператор не пишет 100 сообщений в минуту).
+static void handle_inbox(HTTPRequest* req, HTTPResponse* res) {
+    // Параметр since из query-string.
+    uint32_t since = 0;
+    std::string s = req->getParams()->getQueryParameter("since");
+    if (!s.empty()) since = (uint32_t)strtoul(s.c_str(), nullptr, 10);
+
+    // Снимок буфера под мьютексом — строим JSON уже без блокировок.
+    InboxMsg snap[INBOX_SIZE];
+    uint32_t latest;
+    portENTER_CRITICAL(&g_inbox_mux);
+    memcpy(snap, g_inbox, sizeof(snap));
+    latest = g_inbox_last_id;
+    portEXIT_CRITICAL(&g_inbox_mux);
+
+    String body;
+    body.reserve(256);
+    body += "{\"latest\":";
+    body += latest;
+    body += ",\"messages\":[";
+    bool first = true;
+    uint32_t now = millis();
+    for (uint8_t i = 0; i < INBOX_SIZE; i++) {
+        if (snap[i].id == 0 || snap[i].id <= since) continue;
+        if (!first) body += ",";
+        first = false;
+        body += "{\"id\":";
+        body += snap[i].id;
+        body += ",\"from\":";
+        body += snap[i].from_id;
+        body += ",\"age_ms\":";
+        body += (uint32_t)(now - snap[i].received_ms);
+        body += ",\"text\":\"";
+        json_append_escaped(body, snap[i].text);
+        body += "\"}";
+    }
+    body += "]}";
+
+    res->setHeader("Content-Type", "application/json; charset=utf-8");
+    res->setHeader("Cache-Control", "no-store");
+    res->print(body.c_str());
+}
+
 // idle | tx:N | done — простой текст для polling-а
 static void handle_status(HTTPRequest* /*req*/, HTTPResponse* res) {
     res->setHeader("Content-Type", "text/plain; charset=utf-8");
@@ -446,6 +664,66 @@ static void handle_404(HTTPRequest* req, HTTPResponse* res) {
 }
 
 // ---------------------------------------------------------------------------
+// Прочитать принятый пакет: декодируем, фильтруем эхо, сохраняем CHAT в inbox.
+// Вызывается из loop() сразу как только g_rx_flag взведён ISR-ом DIO1.
+static void process_rx() {
+    uint8_t buf[MESH_PACKET_SIZE];
+    int state = radio.readData(buf, MESH_PACKET_SIZE);
+
+    // Сразу возвращаемся в RX, чтобы не пропустить следующий пакет
+    // пока возимся с этим. Если RX уже crashed — просто будем в STBY,
+    // следующий transmit_packet() всё равно вернёт в RX.
+    int rx_state = radio.startReceive();
+    if (rx_state != RADIOLIB_ERR_NONE) {
+        Serial.printf("[RX] startReceive после readData FAIL code=%d\n", rx_state);
+    }
+
+    if (state != RADIOLIB_ERR_NONE) {
+        if (state == RADIOLIB_ERR_CRC_MISMATCH) {
+            Serial.println(F("[RX] CRC mismatch — дроп"));
+        } else {
+            Serial.printf("[RX] readData FAIL code=%d\n", state);
+        }
+        return;
+    }
+
+    MeshPacket pkt;
+    if (!MeshCodec::decode(buf, pkt)) {
+        Serial.println(F("[RX] decode FAIL (CRC body)"));
+        return;
+    }
+
+    // Эхо своих пакетов (ретранслятор отослал нам обратно).
+    if (pkt.device_id == DEVICE_ID) {
+        return;
+    }
+
+    float rssi = radio.getRSSI();
+    Serial.printf("[RX] type=%u dev=%u ttl=%u  RSSI=%.0f дБм\n",
+                  (unsigned)pkt.type, pkt.device_id, pkt.ttl, rssi);
+
+    // Пока обрабатываем только CHAT — PING / SOS от других туристов
+    // нам неинтересны (этим занимается база). Можно расширить позже.
+    if (pkt.type != PacketType::CHAT) return;
+
+    // Дедуп ретрансляций (один CHAT может прийти 2-3 раза с разным TTL).
+    uint32_t h = hash_payload(pkt.payload, MESH_PAYLOAD_SIZE);
+    if (seen_recently(pkt.device_id, h)) {
+        Serial.printf("[RX] CHAT dev=%u — дубликат ретрансляции\n", pkt.device_id);
+        return;
+    }
+
+    // Достаём текст. Payload zero-padded — strnlen остановится на первом 0
+    // или на конце буфера. text[48] всегда null после копии (см. ниже).
+    char text[MESH_PAYLOAD_SIZE + 1];
+    memcpy(text, pkt.payload, MESH_PAYLOAD_SIZE);
+    text[MESH_PAYLOAD_SIZE] = 0;
+
+    Serial.printf("[RX] CHAT dev=%u: %s\n", pkt.device_id, text);
+    inbox_push(pkt.device_id, text);
+}
+
+// ---------------------------------------------------------------------------
 static void setup_radio() {
     loraSPI.begin(LORA_SCK, LORA_MISO, LORA_MOSI, LORA_CS);
 
@@ -464,6 +742,16 @@ static void setup_radio() {
 
     Serial.printf("[RADIO] %.1f МГц, SF%u, BW%.0f кГц, TX=%d дБм\n",
                   RADIO_FREQ, RADIO_SF, RADIO_BW, RADIO_TX_POWER);
+
+    // RX-цикл: ISR на RX_DONE + сразу переходим в continuous receive.
+    // setPacketReceivedAction внутри настроит DIO1 на нужный IRQ.
+    radio.setPacketReceivedAction(on_rx_done);
+    int rx_state = radio.startReceive();
+    if (rx_state != RADIOLIB_ERR_NONE) {
+        Serial.printf("[RX] startReceive FAIL code=%d — приём отключён\n", rx_state);
+    } else {
+        Serial.println(F("[RX] слушаем эфир (ответы от базы пойдут в inbox)"));
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -491,6 +779,7 @@ static void web_task(void* /*arg*/) {
     g_server.registerNode(new ResourceNode("/api/sos",     "POST", &handle_sos));
     g_server.registerNode(new ResourceNode("/api/gps",     "POST", &handle_gps));
     g_server.registerNode(new ResourceNode("/api/chat",    "POST", &handle_chat));
+    g_server.registerNode(new ResourceNode("/api/inbox",   "GET",  &handle_inbox));
     g_server.registerNode(new ResourceNode("/api/status",  "GET",  &handle_status));
     g_server.setDefaultNode(new ResourceNode("",           "GET",  &handle_404));
 
@@ -529,11 +818,19 @@ static bool transmit_packet(const MeshPacket& pkt, const char* tag) {
 
     if (state == RADIOLIB_ERR_NONE) {
         Serial.printf("[TX] %s OK %lu мс  @ %s\n", tag, dt, coords);
-        return true;
     } else {
         Serial.printf("[TX] %s FAIL code=%d  @ %s\n", tag, state, coords);
-        return false;
     }
+
+    // Чип после transmit() — в STDBY. Возвращаем в RX, иначе пропустим
+    // следующий ответ от базы. Делаем это всегда, даже если TX FAIL —
+    // приёмник полезнее зависшего «ничего не делаем».
+    int rx_state = radio.startReceive();
+    if (rx_state != RADIOLIB_ERR_NONE) {
+        Serial.printf("[RX] startReceive после TX FAIL code=%d\n", rx_state);
+    }
+
+    return state == RADIOLIB_ERR_NONE;
 }
 
 // ---------------------------------------------------------------------------
@@ -616,6 +913,13 @@ void setup() {
 // ---------------------------------------------------------------------------
 void loop() {
     uint32_t now = millis();
+
+    // 0. Принят пакет? Обрабатываем сразу — сообщения от базы важнее
+    // очередного PING. process_rx() сам перезапускает приёмник.
+    if (g_rx_flag) {
+        g_rx_flag = false;
+        process_rx();
+    }
 
     // 1. HTTP-обработчик попросил SOS — взводим бёрст
     if (g_sos_requested) {

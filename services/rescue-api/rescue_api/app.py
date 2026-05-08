@@ -35,6 +35,15 @@ ALLOW_CORS = os.environ.get("ALLOW_CORS", "1") not in ("0", "false", "")
 GIGACHAT_AGENT_URL = os.environ.get("GIGACHAT_AGENT_URL", "http://127.0.0.1:8001").rstrip("/")
 GIGACHAT_AGENT_TIMEOUT = float(os.environ.get("GIGACHAT_AGENT_TIMEOUT", "25"))
 
+# device_id базы спасателей в LoRa-сети. Должен совпадать с NODE_DEVICE_ID
+# в lora-station — иначе ESP32 будет видеть сообщения «от непонятного устройства».
+BASE_DEVICE_ID = int(os.environ.get("NODE_DEVICE_ID", "0x0001"), 0)
+BASE_DEVICE_NAME = os.environ.get("BASE_DEVICE_NAME", "База спасателей")
+
+# CHAT-payload в LoRa-пакете 48 байт. Не используем больше на уровне API —
+# иначе lora-station обрежет, и оператор не увидит, что турист получил кусок.
+CHAT_MAX_BYTES = 48
+
 # Путь до статики дашборда: services/rescue-api/rescue_api/app.py → подняться 3 раза → web/rescue-dashboard
 DASHBOARD_DIR = Path(
     os.environ.get("DASHBOARD_DIR")
@@ -193,6 +202,36 @@ def messages(limit: int = Query(100, gt=0, le=500,
     """Последние N сообщений CHAT в хронологическом порядке (старые → новые)."""
     with db.db_read(DB_PATH) as conn:
         return [models.ChatMessage.from_row(r) for r in db.list_chat(conn, limit)]
+
+
+@app.post("/api/messages", response_model=models.ChatMessage)
+def messages_send(body: models.ChatSendRequest):
+    """Ответ оператора туристам. Записываем в chat_messages (для UI)
+    и в outgoing_chat (для lora-station, она передаст в эфир).
+    Возвращаем готовую запись chat_messages — дашборду удобно вставить
+    её сразу, не дожидаясь WS-event."""
+    text = body.text.strip()
+    if not text:
+        raise HTTPException(400, "Пустое сообщение")
+    if len(text.encode("utf-8")) > CHAT_MAX_BYTES:
+        raise HTTPException(
+            400,
+            f"Сообщение длиннее {CHAT_MAX_BYTES} байт UTF-8 — не влезет в один LoRa-пакет",
+        )
+    with db.db_write(DB_PATH) as conn:
+        db.ensure_base_device(conn, BASE_DEVICE_ID, BASE_DEVICE_NAME)
+        chat_id = db.insert_base_chat(conn, BASE_DEVICE_ID, text)
+        db.insert_outgoing_chat(conn, text, chat_message_id=chat_id)
+        # Подтянем готовую строку обратно — заодно проверим, что JOIN на
+        # devices.name отдаёт правильное имя ('База спасателей').
+        row = conn.execute("""
+            SELECT c.*, d.name AS device_name
+            FROM chat_messages c
+            LEFT JOIN devices d ON d.device_id = c.device_id
+            WHERE c.id = ?
+        """, (chat_id,)).fetchone()
+    log.info("CHAT base→tourists: id=%d %r", chat_id, text[:32])
+    return models.ChatMessage.from_row(row)
 
 
 # ============================================================

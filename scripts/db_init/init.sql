@@ -86,3 +86,20 @@ CREATE TABLE IF NOT EXISTS chat_messages (
 CREATE INDEX IF NOT EXISTS idx_chat_device     ON chat_messages(device_id);
 CREATE INDEX IF NOT EXISTS idx_chat_time       ON chat_messages(received_at);
 CREATE INDEX IF NOT EXISTS idx_chat_channel    ON chat_messages(channel);
+
+-- ============================================================
+-- 5. outgoing_chat — очередь сообщений ОТ базы К туристам
+--    rescue-api пишет в неё при POST /api/messages,
+--    lora-station выгребает (sent_at IS NULL) и шлёт в эфир
+--    как CHAT-пакет с device_id = NODE_DEVICE_ID.
+-- ============================================================
+
+CREATE TABLE IF NOT EXISTS outgoing_chat (
+    id              INTEGER PRIMARY KEY AUTOINCREMENT,
+    message         TEXT    NOT NULL,
+    created_at      TEXT    NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now')),
+    sent_at         TEXT    DEFAULT NULL,             -- NULL = ещё не отправлено
+    chat_message_id INTEGER DEFAULT NULL              -- id записи в chat_messages (для UI), без FK — purge не упадёт
+);
+
+CREATE INDEX IF NOT EXISTS idx_outgoing_pending ON outgoing_chat(id) WHERE sent_at IS NULL;

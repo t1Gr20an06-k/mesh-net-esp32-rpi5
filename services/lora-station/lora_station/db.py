@@ -42,6 +42,32 @@ class Database:
         )
         self._conn.execute("PRAGMA foreign_keys = ON")
         self._conn.execute("PRAGMA journal_mode = WAL")
+        self._migrate()
+
+    def _migrate(self) -> None:
+        """Идемпотентные DDL для новых таблиц/колонок.
+        Так свежий `git pull` без перезапуска init.sh всё равно получит новую схему.
+
+        Сюда же добавлять любые будущие изменения схемы — каждое CREATE/ALTER
+        должно быть через IF NOT EXISTS / try-except.
+        """
+        # outgoing_chat — очередь сообщений ОТ базы К туристам (этап Б чата).
+        # Schema повторяет init.sql, FK на chat_messages намеренно нет.
+        with self._lock:
+            self._conn.execute("""
+                CREATE TABLE IF NOT EXISTS outgoing_chat (
+                    id              INTEGER PRIMARY KEY AUTOINCREMENT,
+                    message         TEXT    NOT NULL,
+                    created_at      TEXT    NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now')),
+                    sent_at         TEXT    DEFAULT NULL,
+                    chat_message_id INTEGER DEFAULT NULL
+                )
+            """)
+            self._conn.execute("""
+                CREATE INDEX IF NOT EXISTS idx_outgoing_pending
+                    ON outgoing_chat(id) WHERE sent_at IS NULL
+            """)
+            self._conn.commit()
 
     def close(self) -> None:
         with self._lock:
@@ -132,6 +158,40 @@ class Database:
                 VALUES (?, ?, ?, ?, ?)
                 """,
                 (pkt.device_id, pkt.latitude, pkt.longitude, int(sos_type), message),
+            )
+
+    # ------------------------------------------------------------------
+    # outgoing_chat — очередь сообщений ОТ базы К туристам
+    # ------------------------------------------------------------------
+    # Заполняет rescue-api при POST /api/messages. Мы здесь только читаем
+    # pending-записи (sent_at IS NULL) и помечаем отправленные после
+    # успешной передачи в эфир.
+
+    def fetch_pending_outgoing_chat(self, limit: int = 5) -> list[tuple[int, str]]:
+        """Вернуть [(id, message), ...] — сообщения, которые ещё не ушли в эфир.
+        Лимит — чтобы за один тик не пересушивать TxQueue (если в очереди
+        накопилось много, отправим частями)."""
+        with self._cursor() as cur:
+            cur.execute(
+                """
+                SELECT id, message FROM outgoing_chat
+                WHERE sent_at IS NULL
+                ORDER BY id ASC
+                LIMIT ?
+                """,
+                (limit,),
+            )
+            return [(row[0], row[1]) for row in cur.fetchall()]
+
+    def mark_outgoing_chat_sent(self, row_id: int) -> None:
+        with self._cursor() as cur:
+            cur.execute(
+                """
+                UPDATE outgoing_chat
+                SET sent_at = strftime('%Y-%m-%dT%H:%M:%SZ', 'now')
+                WHERE id = ?
+                """,
+                (row_id,),
             )
 
     def insert_chat(self, pkt: MeshPacket) -> None:

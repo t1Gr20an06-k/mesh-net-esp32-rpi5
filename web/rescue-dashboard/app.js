@@ -216,17 +216,22 @@ async function refreshSos() {
 
 // --- Чат с туристами (CHAT-пакеты от ESP32) -------------------------------
 // Полностью отдельная панель снизу — НЕ путать с AI-диспетчером выше.
-// На этапе А — только чтение. На этапе Б добавится отправка ответов от базы.
+// Сообщения от базы отрисованы с другим цветом и выровнены справа,
+// чтобы оператор сразу видел свой собственный поток в ленте.
+
+// device_id базы. Должен совпадать с NODE_DEVICE_ID в lora-station и
+// rescue-api/app.py::BASE_DEVICE_ID. Если когда-нибудь поменяется в одном
+// месте — поменять и здесь.
+const BASE_DEVICE_ID = 1;
 
 function tourMsgBubble(m) {
-    // Что показываем как имя: предпочитаем devices.name, иначе "Device <id>".
-    // Когда в этап Б появятся сообщения от самой базы — отметим их отдельно.
-    const name = m.device_name || `Device ${m.device_id}`;
+    const isBase = m.device_id === BASE_DEVICE_ID;
+    const name = m.device_name || (isBase ? 'База' : `Device ${m.device_id}`);
     const div = document.createElement('div');
-    div.className = 'tour-msg';
+    div.className = isBase ? 'tour-msg from-base' : 'tour-msg';
     const who = document.createElement('div');
     who.className = 'who';
-    who.textContent = `${name} · #${m.device_id}`;
+    who.textContent = isBase ? `🛟 ${name}` : `${name} · #${m.device_id}`;
     const body = document.createElement('div');
     body.textContent = m.message;
     const when = document.createElement('div');
@@ -435,16 +440,73 @@ const TABLE_LABELS = {
     pings:          'PING-и',
     sos_events:     'SOS-инциденты',
     chat_messages:  'чат-сообщения',
+    outgoing_chat:  'очередь ответов от базы',
     devices:        'устройства (+ всё что на них ссылается)',
 };
 
-// На этапе А форма tour-chat в read-only состоянии (textarea+кнопка disabled
-// в HTML). Перехватываем submit на всякий случай — браузер всё равно может
-// отправить форму при Enter в фокусе на каком-нибудь скрытом поле.
+// Чат с туристами — отправка ответа от базы. POST /api/messages → бэкенд
+// пишет в chat_messages (WS event 'chat' дашборду) и в outgoing_chat (lora-
+// station выгребает и шлёт в эфир). Сообщение появится в ленте через ~1 сек
+// само через WS — мы здесь только очищаем поле.
+const TOUR_CHAT_MAX_BYTES = 48;
+
 function initTourChat() {
-    const form = $('#tour-chat-form');
-    if (!form) return;
-    form.addEventListener('submit', (e) => e.preventDefault());
+    const form  = $('#tour-chat-form');
+    const input = $('#tour-chat-input');
+    const send  = $('#tour-chat-send');
+    if (!form || !input || !send) return;
+
+    function utf8Len(s) { return new TextEncoder().encode(s).length; }
+
+    function updateState() {
+        const len = utf8Len(input.value.trim());
+        send.disabled = len === 0 || len > TOUR_CHAT_MAX_BYTES;
+        // Подсветим textarea красным если оператор перебрал лимит — иначе
+        // он узнает только из 400 ответа после нажатия отправить.
+        input.style.borderColor = len > TOUR_CHAT_MAX_BYTES ? '#dc2626' : '';
+    }
+    input.addEventListener('input', updateState);
+    updateState();
+
+    // Enter — отправить, Shift+Enter — перенос строки.
+    input.addEventListener('keydown', (e) => {
+        if (e.key === 'Enter' && !e.shiftKey) {
+            e.preventDefault();
+            if (!send.disabled) form.requestSubmit();
+        }
+    });
+
+    form.addEventListener('submit', async (e) => {
+        e.preventDefault();
+        const text = input.value.trim();
+        if (!text) return;
+        if (utf8Len(text) > TOUR_CHAT_MAX_BYTES) {
+            alert(`Сообщение длиннее ${TOUR_CHAT_MAX_BYTES} байт UTF-8 — не влезет в LoRa-пакет.`);
+            return;
+        }
+        send.disabled = true;
+        input.disabled = true;
+        try {
+            const r = await fetch('/api/messages', {
+                method: 'POST',
+                headers: {'Content-Type': 'application/json'},
+                body: JSON.stringify({text}),
+            });
+            if (!r.ok) {
+                const txt = await r.text();
+                throw new Error(`HTTP ${r.status}: ${txt}`);
+            }
+            // Само сообщение появится в ленте через WS-event 'chat'.
+            input.value = '';
+            updateState();
+        } catch (err) {
+            alert('Не удалось отправить: ' + err.message);
+        } finally {
+            input.disabled = false;
+            input.focus();
+            updateState();
+        }
+    });
 }
 
 function initPurge() {

@@ -338,3 +338,12 @@ aside {
     margin-top: 4px;
     font-family: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
 }
+
+/* Сообщение от самой базы — другой цвет, выровнено справа */
+.tour-msg.from-base {
+    background: #422006;
+    align-self: flex-end;
+    border-bottom-left-radius: 8px;
+    border-bottom-right-radius: 2px;
+}
+.tour-msg.from-base .who { color: #fbbf24; }
