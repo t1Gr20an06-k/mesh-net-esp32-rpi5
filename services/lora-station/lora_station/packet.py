@@ -80,7 +80,13 @@ def encode(pkt: MeshPacket) -> bytes:
 
 
 def decode(raw: bytes) -> MeshPacket:
-    """Распаковать 64 байта. ValueError при неверном размере или CRC."""
+    """Распаковать 64 байта. ValueError при неверном размере, CRC или
+    бессмысленных значениях полей.
+
+    Sanity-проверки (version/type/channel/ttl) защищают от ложных пакетов:
+    LoRa-CRC чипа + наш CRC-16 — это всё ещё ~1/65536 шанс случайного
+    совпадения на шуме. Без валидации в БД появляются «фантомные» устройства
+    с device_id из мусорных байт (см. инцидент с device_id=12345)."""
     if len(raw) != PACKET_SIZE:
         raise ValueError(f"Неверный размер пакета: {len(raw)}, ожидается {PACKET_SIZE}")
 
@@ -92,6 +98,18 @@ def decode(raw: bytes) -> MeshPacket:
     version, ptype, device_id, channel, ttl, lat, lon, payload = struct.unpack(
         '>BBHBBii48s', raw[:62]
     )
+
+    if version != PROTO_VERSION:
+        raise ValueError(f"Неподдерживаемая версия протокола: {version}")
+    if ptype not in PacketType._value2member_map_:
+        raise ValueError(f"Неизвестный тип пакета: {ptype}")
+    if channel not in Channel._value2member_map_:
+        raise ValueError(f"Неизвестный канал: {channel}")
+    # TTL стартует с 3 и уменьшается. Значения >8 явно мусор: если кто-то
+    # когда-то изменит дефолт — поправим тут.
+    if ttl == 0 or ttl > 8:
+        raise ValueError(f"Подозрительный TTL: {ttl}")
+
     return MeshPacket(
         version   = version,
         type      = PacketType(ptype),

@@ -64,11 +64,22 @@ bool MeshCodec::decode(const uint8_t in[MESH_PACKET_SIZE], MeshPacket& out) {
         return false;
     }
 
-    out.version   = in[0];
-    out.type      = (PacketType)in[1];
+    // Sanity-проверка полей: LoRa-CRC + наш CRC-16 — это всё ещё ~1/65536
+    // шанс совпадения на шуме. Без валидации в нашу сеть пролезет «фантом».
+    uint8_t v   = in[0];
+    uint8_t t   = in[1];
+    uint8_t ch  = in[4];
+    uint8_t ttl = in[5];
+    if (v != MESH_PROTO_VERSION) return false;
+    if (t > (uint8_t)PacketType::ACK) return false;        // 0..3
+    if (ch > (uint8_t)Channel::RESCUE) return false;       // 0..1
+    if (ttl == 0 || ttl > 8) return false;                 // дефолт 3, запас x2
+
+    out.version   = v;
+    out.type      = (PacketType)t;
     out.device_id = ((uint16_t)in[2] << 8) | in[3];
-    out.channel   = (Channel)in[4];
-    out.ttl       = in[5];
+    out.channel   = (Channel)ch;
+    out.ttl       = ttl;
 
     // latitude — восстанавливаем знак через union-трюк (int32 из 4 байт BE)
     out.latitude  = ((int32_t)(int8_t)in[6] << 24)

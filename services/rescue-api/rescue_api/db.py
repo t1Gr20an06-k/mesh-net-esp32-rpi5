@@ -93,9 +93,16 @@ def get_stats(conn: sqlite3.Connection) -> dict:
 # Запросы — туристы и устройства
 # ============================================================
 
-def list_active_tourists(conn: sqlite3.Connection) -> List[sqlite3.Row]:
+def list_active_tourists(
+    conn: sqlite3.Connection,
+    exclude_device_id: Optional[int] = None,
+) -> List[sqlite3.Row]:
     """Устройства, от которых был PING за последние ACTIVE_THRESHOLD_MIN минут.
     Подтягиваем последний PING (координаты, RSSI, батарея).
+
+    `exclude_device_id` — id самой базы (NODE_DEVICE_ID). Когда оператор
+    отвечает в чат, в `devices` появляется запись о базе (см. ensure_base_device
+    в rescue-api/db.py). Не хочется видеть «База спасателей» в списке туристов.
 
     Про `strftime('%Y-%m-%dT%H:%M:%SZ', ...)` — см. комментарий в get_stats."""
     return conn.execute("""
@@ -114,12 +121,21 @@ def list_active_tourists(conn: sqlite3.Connection) -> List[sqlite3.Row]:
         )
         WHERE d.last_seen_at > strftime('%Y-%m-%dT%H:%M:%SZ',
                                         'now', '-' || :m || ' minutes')
+          AND (:excl IS NULL OR d.device_id != :excl)
         ORDER BY d.last_seen_at DESC
-    """, {"m": ACTIVE_THRESHOLD_MIN}).fetchall()
+    """, {"m": ACTIVE_THRESHOLD_MIN, "excl": exclude_device_id}).fetchall()
 
 
-def list_devices(conn: sqlite3.Connection) -> List[sqlite3.Row]:
-    return conn.execute("SELECT * FROM devices ORDER BY device_id").fetchall()
+def list_devices(
+    conn: sqlite3.Connection,
+    exclude_device_id: Optional[int] = None,
+) -> List[sqlite3.Row]:
+    if exclude_device_id is None:
+        return conn.execute("SELECT * FROM devices ORDER BY device_id").fetchall()
+    return conn.execute(
+        "SELECT * FROM devices WHERE device_id != ? ORDER BY device_id",
+        (exclude_device_id,),
+    ).fetchall()
 
 
 # ============================================================

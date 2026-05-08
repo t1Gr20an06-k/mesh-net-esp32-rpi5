@@ -1,0 +1,73 @@
+---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
+Verbose mode can be enabled via `-v, --verbose` option
+CONFIGURATION: https://docs.platformio.org/page/boards/espressif32/esp32-s3-devkitc-1.html
+PLATFORM: Espressif 32 (6.13.0) > Espressif ESP32-S3-DevKitC-1-N8 (8 MB QD, No PSRAM)
+HARDWARE: ESP32S3 240MHz, 320KB RAM, 8MB Flash
+DEBUG: Current (esp-builtin) On-board (esp-builtin) External (cmsis-dap, esp-bridge, esp-prog, iot-bus-jtag, jlink, minimodule, olimex-arm-usb-ocd, olimex-arm-usb-ocd-h, olimex-arm-usb-tiny-h, olimex-jtag-tiny, tumpa)
+PACKAGES: 
+ - framework-arduinoespressif32 @ 3.20017.241212+sha.dcc1105b 
+ - tool-esptoolpy @ 2.41100.0 (4.11.0) 
+ - tool-mkfatfs @ 2.0.1 
+ - tool-mklittlefs @ 1.203.210628 (2.3) 
+ - tool-mkspiffs @ 2.230.0 (2.30) 
+ - toolchain-riscv32-esp @ 8.4.0+2021r2-patch5 
+ - toolchain-xtensa-esp32s3 @ 8.4.0+2021r2-patch5
+LDF: Library Dependency Finder -> https://bit.ly/configure-pio-ldf
+LDF Modes: Finder ~ chain, Compatibility ~ soft
+Found 36 compatible libraries
+Scanning dependencies...
+Dependency Graph
+|-- RadioLib @ 6.6.0
+|-- esp32_https_server @ 1.0.0
+|-- mesh_packet
+|-- SPI @ 2.0.0
+|-- WiFi @ 2.0.0
+Building in release mode
+Compiling .pio\build\esp32-s3-n16r8\src\main.cpp.o
+In file included from .pio/libdeps/esp32-s3-n16r8/esp32_https_server/src/HTTPSServer.hpp:11,
+                 from src/main.cpp:26:
+C:/Users/SABBA/.platformio/packages/framework-arduinoespressif32/tools/sdk/esp32s3/include/openssl/include/openssl/ssl.h:8:2: warning: #warning "OpenSSL component will be removed from ESP-IDF in v5.0, please use esp_tls instead" [-Wcpp]
+ #warning "OpenSSL component will be removed from ESP-IDF in v5.0, please use esp_tls instead"
+  ^~~~~~~
+In file included from .pio/libdeps/esp32-s3-n16r8/esp32_https_server/src/ConnectionContext.hpp:8,
+                 from .pio/libdeps/esp32-s3-n16r8/esp32_https_server/src/HTTPRequest.hpp:10,
+                 from .pio/libdeps/esp32-s3-n16r8/esp32_https_server/src/HTTPSCallbackFunction.hpp:4,
+                 from .pio/libdeps/esp32-s3-n16r8/esp32_https_server/src/ResourceNode.hpp:7,
+                 from .pio/libdeps/esp32-s3-n16r8/esp32_https_server/src/HTTPServer.hpp:20,
+                 from .pio/libdeps/esp32-s3-n16r8/esp32_https_server/src/HTTPSServer.hpp:15,
+                 from src/main.cpp:26:
+C:/Users/SABBA/.platformio/packages/framework-arduinoespressif32/tools/sdk/esp32s3/include/openssl/include/openssl/ssl.h:8:2: warning: #warning "OpenSSL component will be removed from ESP-IDF in v5.0, please use esp_tls instead" [-Wcpp]
+ #warning "OpenSSL component will be removed from ESP-IDF in v5.0, please use esp_tls instead"
+  ^~~~~~~
+In file included from .pio/libdeps/esp32-s3-n16r8/esp32_https_server/src/HTTPResponse.hpp:12,
+                 from .pio/libdeps/esp32-s3-n16r8/esp32_https_server/src/HTTPSCallbackFunction.hpp:5,
+                 from .pio/libdeps/esp32-s3-n16r8/esp32_https_server/src/ResourceNode.hpp:7,
+                 from .pio/libdeps/esp32-s3-n16r8/esp32_https_server/src/HTTPServer.hpp:20,
+                 from .pio/libdeps/esp32-s3-n16r8/esp32_https_server/src/HTTPSServer.hpp:15,
+                 from src/main.cpp:26:
+C:/Users/SABBA/.platformio/packages/framework-arduinoespressif32/tools/sdk/esp32s3/include/openssl/include/openssl/ssl.h:8:2: warning: #warning "OpenSSL component will be removed from ESP-IDF in v5.0, please use esp_tls instead" [-Wcpp]
+ #warning "OpenSSL component will be removed from ESP-IDF in v5.0, please use esp_tls instead"
+  ^~~~~~~
+In file included from .pio/libdeps/esp32-s3-n16r8/esp32_https_server/src/HTTPSConnection.hpp:9,
+                 from .pio/libdeps/esp32-s3-n16r8/esp32_https_server/src/HTTPSServer.hpp:22,
+                 from src/main.cpp:26:
+C:/Users/SABBA/.platformio/packages/framework-arduinoespressif32/tools/sdk/esp32s3/include/openssl/include/openssl/ssl.h:8:2: warning: #warning "OpenSSL component will be removed from ESP-IDF in v5.0, please use esp_tls instead" [-Wcpp]
+ #warning "OpenSSL component will be removed from ESP-IDF in v5.0, please use esp_tls instead"
+  ^~~~~~~
+src/main.cpp: In function 'void handle_inbox(httpsserver::HTTPRequest*, httpsserver::HTTPResponse*)':
+src/main.cpp:607:64: error: no matching function for call to 'httpsserver::ResourceParameters::getQueryParameter(const char [6])'
+     std::string s = req->getParams()->getQueryParameter("since");
+                                                                ^
+In file included from .pio/libdeps/esp32-s3-n16r8/esp32_https_server/src/HTTPRequest.hpp:14,
+                 from .pio/libdeps/esp32-s3-n16r8/esp32_https_server/src/HTTPSCallbackFunction.hpp:4,
+                 from .pio/libdeps/esp32-s3-n16r8/esp32_https_server/src/ResourceNode.hpp:7,
+                 from .pio/libdeps/esp32-s3-n16r8/esp32_https_server/src/HTTPServer.hpp:20,
+                 from .pio/libdeps/esp32-s3-n16r8/esp32_https_server/src/HTTPSServer.hpp:15,
+                 from src/main.cpp:26:
+.pio/libdeps/esp32-s3-n16r8/esp32_https_server/src/ResourceParameters.hpp:37:8: note: candidate: 'bool httpsserver::ResourceParameters::getQueryParameter(const string&, std::__cxx11::string&)'
+   bool getQueryParameter(std::string const &name, std::string &value);
+        ^~~~~~~~~~~~~~~~~
+.pio/libdeps/esp32-s3-n16r8/esp32_https_server/src/ResourceParameters.hpp:37:8: note:   candidate expects 2 arguments, 1 provided
+*** [.pio\build\esp32-s3-n16r8\src\main.cpp.o] Error 1
+=============================================================================================== [FAILED] Took 10.53 seconds ===============================================================================================
+PS C:\git\Mesh-net тропы\firmware\esp32-terminal> 

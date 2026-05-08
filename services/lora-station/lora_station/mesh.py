@@ -65,8 +65,16 @@ class DedupCache:
         if pkt.type == PacketType.PING and len(pkt.payload) >= 4:
             seq = int.from_bytes(pkt.payload[2:4], 'big', signed=False)
             return (int(pkt.type), pkt.device_id, seq)
-        # Для SOS/CHAT/ACK seq нет — используем грубую секундную метку.
-        return (int(pkt.type), pkt.device_id, int(time.monotonic()))
+        # Для SOS/CHAT/ACK seq нет. Раньше брали int(time.monotonic()) —
+        # это было багом: SOS-бёрст (3 пакета × 500 мс) попадал в 2-3
+        # разные секунды и дедуп не срабатывал — на дашборде видно 3
+        # одинаковых SOS-инцидента.
+        # Теперь дедуплицируем по содержимому payload: один и тот же
+        # текст/тип в окне TTL кеша считается дублем. Окно DEDUP_TTL_SEC
+        # (30 сек) — за это время бёрст и все ретрансляции отстреляются,
+        # а если оператор шлёт одинаковый ответ через минуту — это уже
+        # отдельное сообщение, и лучше не дедупить, чем потерять.
+        return (int(pkt.type), pkt.device_id, hash(bytes(pkt.payload)))
 
     def seen(self, pkt: MeshPacket) -> bool:
         """True если пакет уже был обработан (и до сих пор в окне TTL)."""

@@ -120,16 +120,21 @@ def stats():
 
 @app.get("/api/tourists", response_model=list[models.Tourist])
 def tourists():
-    """Кто сейчас 'в эфире' — был PING за последние ACTIVE_THRESHOLD_MIN минут (см. db.py)."""
+    """Кто сейчас 'в эфире' — был PING за последние ACTIVE_THRESHOLD_MIN минут (см. db.py).
+    Сама база (BASE_DEVICE_ID) исключена — её появление в списке после
+    POST /api/messages было бы артефактом ensure_base_device()."""
     with db.db_read(DB_PATH) as conn:
-        return [models.Tourist.from_row(r) for r in db.list_active_tourists(conn)]
+        return [models.Tourist.from_row(r)
+                for r in db.list_active_tourists(conn, exclude_device_id=BASE_DEVICE_ID)]
 
 
 @app.get("/api/devices", response_model=list[models.Device])
 def devices():
-    """Весь реестр устройств, включая давно ушедших с эфира."""
+    """Весь реестр устройств, включая давно ушедших с эфира.
+    База исключена — см. /api/tourists."""
     with db.db_read(DB_PATH) as conn:
-        return [models.Device.from_row(r) for r in db.list_devices(conn)]
+        return [models.Device.from_row(r)
+                for r in db.list_devices(conn, exclude_device_id=BASE_DEVICE_ID)]
 
 
 # ============================================================
@@ -221,6 +226,12 @@ def messages_send(body: models.ChatSendRequest):
     with db.db_write(DB_PATH) as conn:
         db.ensure_base_device(conn, BASE_DEVICE_ID, BASE_DEVICE_NAME)
         chat_id = db.insert_base_chat(conn, BASE_DEVICE_ID, text)
+        # Кладём в outgoing_chat ДВЕ копии. lora-station пуллит outbox каждую
+        # секунду — между передачами выйдет ~1 сек. Зачем: LoRa полу-дуплекс,
+        # если ESP32 в этот момент сам передаёт (PING/CHAT/SOS) — он наш
+        # пакет не услышит. Один повтор закрывает 99% таких коллизий.
+        # Дедуп на стороне ESP32 (hash payload + 30 сек) уберёт лишнее.
+        db.insert_outgoing_chat(conn, text, chat_message_id=chat_id)
         db.insert_outgoing_chat(conn, text, chat_message_id=chat_id)
         # Подтянем готовую строку обратно — заодно проверим, что JOIN на
         # devices.name отдаёт правильное имя ('База спасателей').
@@ -230,7 +241,7 @@ def messages_send(body: models.ChatSendRequest):
             LEFT JOIN devices d ON d.device_id = c.device_id
             WHERE c.id = ?
         """, (chat_id,)).fetchone()
-    log.info("CHAT base→tourists: id=%d %r", chat_id, text[:32])
+    log.info("CHAT base→tourists: id=%d %r (×2 retransmit)", chat_id, text[:32])
     return models.ChatMessage.from_row(row)
 
 
