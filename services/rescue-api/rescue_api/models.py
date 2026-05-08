@@ -197,7 +197,14 @@ class ResolveRequest(BaseModel):
 
 
 class PurgeRequest(BaseModel):
-    """Подтверждение для DELETE /api/admin/purge.
-    confirm должен быть строго равен 'ОЧИСТИТЬ' — UI вводит это вручную.
-    Защита от случайного curl и от XSS-формы где-нибудь."""
+    """Тело POST /api/admin/purge.
+
+    confirm — должен быть строго 'ОЧИСТИТЬ' (UI вводит вручную). Защита
+    от случайного curl и от XSS-формы где-нибудь.
+
+    tables — какие таблицы чистить, подмножество
+    ('pings','sos_events','chat_messages','devices'). Пустой список —
+    400. Если выбран devices, дети подтянутся каскадом (см. db.purge_tables).
+    """
     confirm: str
+    tables: list[str]

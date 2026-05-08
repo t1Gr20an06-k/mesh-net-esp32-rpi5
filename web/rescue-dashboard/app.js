@@ -358,15 +358,28 @@ function initChat() {
 }
 
 // --- Очистка БД (отладка) ---------------------------------------------------
-// Двойное подтверждение: confirm + ввод слова "ОЧИСТИТЬ". Сервер тоже
-// проверяет confirm в body — UI один без сервера базу не снесёт.
+// Чекбоксы выбирают что чистить. Подтверждение: confirm() со списком +
+// prompt() с вводом ОЧИСТИТЬ. Сервер тоже валидирует confirm и
+// список таблиц — UI один без сервера БД не снесёт.
+const TABLE_LABELS = {
+    pings:          'PING-и',
+    sos_events:     'SOS-инциденты',
+    chat_messages:  'чат-сообщения',
+    devices:        'устройства (+ всё что на них ссылается)',
+};
+
 function initPurge() {
     const btn = $('#purge-db');
     if (!btn) return;
     btn.addEventListener('click', async () => {
-        if (!confirm('Удалить ВСЕ данные из БД (pings, sos, devices, chat)?\nЭто необратимо.')) {
+        const checks = document.querySelectorAll('input[name="purge"]:checked');
+        const tables = Array.from(checks).map(c => c.value);
+        if (tables.length === 0) {
+            alert('Выбери хотя бы одну таблицу для очистки.');
             return;
         }
+        const human = tables.map(t => '• ' + (TABLE_LABELS[t] || t)).join('\n');
+        if (!confirm('Удалить из БД:\n' + human + '\n\nЭто необратимо.')) return;
         const phrase = prompt('Введи слово ОЧИСТИТЬ для подтверждения:');
         if (phrase !== 'ОЧИСТИТЬ') {
             alert('Подтверждение не совпало — БД не тронута.');
@@ -378,7 +391,7 @@ function initPurge() {
             const r = await fetch('/api/admin/purge', {
                 method: 'POST',
                 headers: {'Content-Type': 'application/json'},
-                body: JSON.stringify({confirm: 'ОЧИСТИТЬ'}),
+                body: JSON.stringify({confirm: 'ОЧИСТИТЬ', tables}),
             });
             if (!r.ok) {
                 const txt = await r.text();
@@ -386,7 +399,8 @@ function initPurge() {
             }
             const data = await r.json();
             alert('Готово. Удалено:\n' + JSON.stringify(data.deleted, null, 2));
-            // Чистим состояние клиента — иначе маркеры/списки висят до WS-эвента.
+            // Маркеры/списки чистим вручную — WS-эвенты сразу не прилетят,
+            // а «пустая БД, но карта в маркерах» выглядит уродливо.
             for (const [, m] of tourMarkers) map.removeLayer(m);
             tourMarkers.clear();
             for (const [, m] of sosMarkers)  map.removeLayer(m);
@@ -396,7 +410,7 @@ function initPurge() {
             alert('Ошибка: ' + e.message);
         } finally {
             btn.disabled = false;
-            btn.textContent = 'Очистить БД';
+            btn.textContent = 'Очистить выбранное';
         }
     });
 }

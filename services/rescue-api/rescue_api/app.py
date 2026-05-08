@@ -195,12 +195,20 @@ def sos_resolve(sos_id: int, body: models.ResolveRequest):
 def admin_purge(body: models.PurgeRequest):
     if body.confirm != "ОЧИСТИТЬ":
         raise HTTPException(403, "Подтверждение не совпадает (ожидается 'ОЧИСТИТЬ')")
-    with db.db_write(DB_PATH) as conn:
-        deleted = db.purge_all(conn)
-    # purge_all сбросил sqlite_sequence — id пойдут от 1. Без ресета
-    # broadcaster проигнорировал бы их (1 < last_seen_id из памяти).
+    if not body.tables:
+        raise HTTPException(400, "Не выбрано ни одной таблицы")
+    try:
+        with db.db_write(DB_PATH) as conn:
+            deleted = db.purge_tables(conn, body.tables)
+    except ValueError as e:
+        raise HTTPException(400, str(e))
+    # purge_tables сбросил sqlite_sequence для затронутых таблиц — id
+    # пойдут от 1. Без ресета broadcaster проигнорировал бы их
+    # (1 < last_seen_id из памяти). Сбрасываем независимо от того, какие
+    # таблицы чистили — это дёшево, а условный код на «pings/sos в списке»
+    # был бы хрупким.
     _broadcaster.reset_counters()
-    log.warning("ОЧИСТКА БД: %s", deleted)
+    log.warning("ОЧИСТКА БД: tables=%s deleted=%s", body.tables, deleted)
     return {"ok": True, "deleted": deleted}
 
 

@@ -31,10 +31,15 @@
                 </ul>
             </section>
             <section class="admin">
-                <h2>Отладка</h2>
-                <button id="purge-db" type="button" class="btn-danger"
-                        title="Удалить все pings, sos, devices, chat. Для отладки.">
-                    Очистить БД
+                <h2>Отладка — очистить БД</h2>
+                <div class="purge-list">
+                    <label><input type="checkbox" name="purge" value="pings"        checked> PING-и (треки)</label>
+                    <label><input type="checkbox" name="purge" value="sos_events"          > SOS-инциденты</label>
+                    <label><input type="checkbox" name="purge" value="chat_messages"       > чат-сообщения</label>
+                    <label><input type="checkbox" name="purge" value="devices"             > устройства <span class="muted">(тащит за собой остальное)</span></label>
+                </div>
+                <button id="purge-db" type="button" class="btn-danger">
+                    Очистить выбранное
                 </button>
             </section>
         </aside>

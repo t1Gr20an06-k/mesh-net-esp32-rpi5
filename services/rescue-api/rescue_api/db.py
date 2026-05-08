@@ -227,33 +227,52 @@ def get_new_sos(conn: sqlite3.Connection, since_id: int, limit: int = 100) -> Li
 # Админ — полная очистка БД (для отладки)
 # ============================================================
 
-def purge_all(conn: sqlite3.Connection) -> dict:
-    """Удаляет всё: pings, sos_events, chat_messages, devices.
+PURGEABLE_TABLES = ("pings", "sos_events", "chat_messages", "devices")
 
-    Порядок строгий — сначала таблицы со ссылками на devices, иначе FK.
-    Возвращает {table: rowcount} для лога/ответа.
 
-    Также сбрасываем AUTOINCREMENT в sqlite_sequence — следующие id
-    пойдут от 1, а не от 5001. Чтобы при этом WS-broadcaster в ws.py
-    не пропустил новые строки (он хранит last_seen_id в памяти), его
-    нужно ресетнуть отдельно — это делает admin_purge() в app.py
-    через _broadcaster.reset_counters() сразу после этого вызова.
+def purge_tables(conn: sqlite3.Connection, tables: list[str]) -> dict:
+    """Удаляет переданные таблицы из mesh.db. Возвращает {table: rowcount}.
 
-    ⚠ В sos_events лежат данные по ЧС — обычно их хранят. Эта функция
-    задумана для отладки/прогонов с нуля, не для прода.
+    Аргумент `tables` — подмножество PURGEABLE_TABLES. Неизвестные имена —
+    ValueError (защита от SQL-инъекции через f-string DELETE FROM).
+
+    FK-каскад: pings/sos_events/chat_messages ссылаются на devices(device_id).
+    Если просят почистить devices — обязательно надо подчистить и детей,
+    иначе DELETE FROM devices упадёт с FOREIGN KEY constraint failed.
+    Молча включаем «детей» — иначе UI получает невнятную 500-ку.
+
+    sqlite_sequence сбрасываем только для тех таблиц, которые реально
+    почистили — иначе можно случайно «обнулить» счётчик той таблицы,
+    которую трогать не просили.
+
+    ⚠ WS-broadcaster хранит last_seen_id в памяти — его сбрасывает
+    admin_purge() в app.py сразу после этого вызова.
     """
-    res = {}
+    requested = set(tables)
+    bad = requested - set(PURGEABLE_TABLES)
+    if bad:
+        raise ValueError(f"неизвестные таблицы: {sorted(bad)}")
+
+    # FK-каскад: devices обязан тащить за собой всех детей.
+    if "devices" in requested:
+        requested |= {"pings", "sos_events", "chat_messages"}
+
+    # Порядок строгий — сначала «дети», потом «родители».
+    res: dict[str, int] = {}
     for table in ("pings", "sos_events", "chat_messages", "devices"):
-        cur = conn.execute(f"DELETE FROM {table}")
-        res[table] = cur.rowcount
-    # sqlite_sequence создаётся только если в схеме есть AUTOINCREMENT-колонки.
-    # У нас они есть (pings.id, sos_events.id, chat_messages.id), так что
-    # таблица существует. На всякий — ловим ошибку, если её нет.
-    try:
-        conn.execute(
-            "DELETE FROM sqlite_sequence "
-            "WHERE name IN ('pings','sos_events','chat_messages')"
-        )
-    except sqlite3.OperationalError:
-        pass
+        if table in requested:
+            cur = conn.execute(f"DELETE FROM {table}")
+            res[table] = cur.rowcount
+
+    # sqlite_sequence существует только для AUTOINCREMENT-таблиц.
+    seq = [t for t in requested if t in ("pings", "sos_events", "chat_messages")]
+    if seq:
+        placeholders = ",".join("?" for _ in seq)
+        try:
+            conn.execute(
+                f"DELETE FROM sqlite_sequence WHERE name IN ({placeholders})",
+                seq,
+            )
+        except sqlite3.OperationalError:
+            pass
     return res
