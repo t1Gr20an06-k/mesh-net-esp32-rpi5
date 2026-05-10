@@ -813,12 +813,36 @@ static void web_task(void* /*arg*/) {
 }
 
 // ---------------------------------------------------------------------------
+// Listen-before-talk: до 4 попыток scanChannel() перед TX.
+// scanChannel блокирует на ~2 символа (≈8 мс на SF10/BW125) и возвращает
+// RADIOLIB_LORA_DETECTED если в эфире кто-то говорит, RADIOLIB_CHANNEL_FREE
+// если чисто. Если стабильно занято — передаём всё равно (пакет важен).
+// После scanChannel чип в STDBY_RC; transmit() сам переведёт в TX.
+// Внимание: g_rx_flag может взвестись из-за CAD IRQ — сбрасываем явно.
+static bool wait_for_clear_channel() {
+    for (int i = 0; i < 4; i++) {
+        int state = radio.scanChannel();
+        g_rx_flag = false;
+        if (state == RADIOLIB_CHANNEL_FREE) return true;
+        // Канал занят — случайный backoff 80-330 мс. Случайность важна:
+        // если оба узла сделают одинаковый backoff, после ожидания они
+        // снова попытаются TX одновременно — ничего не изменится.
+        delay(80 + (esp_random() & 0xFF));
+    }
+    return false;
+}
+
 // Передать один пакет в эфир. Возвращает true при успехе.
 // Лог печатаем ОДНОЙ строкой после transmit() — иначе HTTPS-таск с Core 0
 // успевает влезть в середину "[TX] ... OK" пока радио занято ~700 мс.
 static bool transmit_packet(const MeshPacket& pkt, const char* tag) {
     uint8_t buf[MESH_PACKET_SIZE];
     MeshCodec::encode(pkt, buf);
+
+    // LBT — пропустим лишнюю collision-у когда оператор только что нажал
+    // отправить, а у нас тоже PING на подходе. Не страшно если занято —
+    // wait_for_clear_channel сам вернёт после короткого ожидания.
+    wait_for_clear_channel();
 
     unsigned long t0 = millis();
     int state = radio.transmit(buf, MESH_PACKET_SIZE);
@@ -973,8 +997,13 @@ void loop() {
             g_chat_next_ms = now + CHAT_INTERVAL_MS;
         }
     } else {
-        // 4. Обычный PING — только когда не идёт SOS и нет чат-сообщений
-        if (now - g_last_ping_ms >= PING_INTERVAL_MS) {
+        // 4. Обычный PING — только когда не идёт SOS и нет чат-сообщений.
+        // Случайный jitter ±1.5 сек на интервале: без него два узла синхронно
+        // тикают каждые 10 сек и постоянно сталкиваются. Лимит 1500 мс на 10000 —
+        // это 15% разброса, хватает чтобы окна расходились.
+        uint32_t jitter = esp_random() % 3000;       // 0..2999
+        uint32_t target = PING_INTERVAL_MS + jitter - 1500;  // ±1500 мс
+        if (now - g_last_ping_ms >= target) {
             g_last_ping_ms = now;
             send_ping();
         }

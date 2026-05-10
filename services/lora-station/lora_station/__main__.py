@@ -17,6 +17,7 @@
 import argparse
 import logging
 import os
+import random
 import signal
 import sys
 import time
@@ -164,10 +165,17 @@ def main() -> int:
                     log.warning("[diag] FAIL: %s", exc)
             # Outbox: достаём pending-сообщения и собираем CHAT-пакеты от
             # имени NODE_DEVICE_ID. Координаты у базы (0, 0) — она стационарна.
+            #
+            # limit=1 КРИТИЧНО: rescue-api пишет 2 копии одного сообщения для
+            # retransmit (pending — это (id=N, msg) и (id=N+1, msg)). Если
+            # выгребать обе сразу, они уйдут в TxQueue с разницей ~700 мс
+            # (длительность одного пакета в эфире), и шанс что ESP32 в это
+            # короткое окно не в TX'е — низкий. Берём по одной за тик —
+            # между ними получится OUTBOX_POLL_S = 1.0 сек реальной паузы.
             if now - last_outbox_t >= OUTBOX_POLL_S:
                 last_outbox_t = now
                 try:
-                    pending = db.fetch_pending_outgoing_chat(limit=5)
+                    pending = db.fetch_pending_outgoing_chat(limit=1)
                 except Exception as exc:  # noqa: BLE001
                     log.warning("outbox fetch FAIL: %s", exc)
                     pending = []
@@ -227,6 +235,22 @@ def main() -> int:
             # TX-очередь — отдаём один пакет за итерацию, чтобы не залипать.
             tx_raw = tx_q.pop(timeout=0)
             if tx_raw is not None:
+                # Listen-before-talk: дёшевая защита от collision'а с ESP32.
+                # Если оба узла начинают TX в один и тот же момент, ни один
+                # пакет не дойдёт. Здесь мы спрашиваем чип «есть ли кто-то
+                # сейчас в эфире» — если да, делаем случайный backoff и
+                # пробуем снова. До 4 попыток; если канал стабильно занят —
+                # передаём всё равно (пакет важен, особенно для SOS).
+                lbt_attempts = 0
+                while lbt_attempts < 4 and radio.channel_busy(threshold_dbm=-100):
+                    backoff = random.uniform(0.1, 0.4)
+                    log.debug("[LBT] канал занят, backoff %.0f мс", backoff * 1000)
+                    time.sleep(backoff)
+                    lbt_attempts += 1
+                if lbt_attempts > 0:
+                    log.info("[LBT] %d попыток, канал %s",
+                             lbt_attempts,
+                             "освободился" if not radio.channel_busy() else "всё ещё занят, шлём")
                 log.info("[TX] ретрансляция, %d байт", len(tx_raw))
                 ok = radio.transmit(tx_raw, timeout_s=3.0)
                 if not ok:

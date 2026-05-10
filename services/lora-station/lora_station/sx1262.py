@@ -61,6 +61,7 @@ _CMD_GET_PACKET_STATUS        = 0x14
 _CMD_GET_DEVICE_ERRORS        = 0x17
 _CMD_CLEAR_DEVICE_ERRORS      = 0x07
 _CMD_GET_STATUS               = 0xC0
+_CMD_GET_RSSI_INST            = 0x15
 
 # Standby modes
 _STDBY_RC   = 0x00
@@ -477,6 +478,23 @@ class SX1262:
     def get_irq_raw(self) -> int:
         """Сырое значение IRQ-регистра (без сброса) — для отладки."""
         return self._read_irq_status()
+
+    def get_instant_rssi(self) -> int:
+        """GetRssiInst (0x15): мгновенный RSSI на канале (дБм, отрицательный).
+        Имеет смысл только когда чип в RX. SX1262 формула: rssi = -rssi_raw / 2."""
+        self._wait_busy_low()
+        rx = self._spi_xfer([_CMD_GET_RSSI_INST, 0x00, 0x00])
+        rssi_raw = rx[2]
+        return -rssi_raw // 2
+
+    def channel_busy(self, threshold_dbm: int = -100) -> bool:
+        """Listen-before-talk: True если в канале сейчас кто-то передаёт.
+        Грубо, через мгновенный RSSI. Не такая надёжная как полноценный CAD,
+        но дешёвая (одна SPI-команда, ~200 мкс) и в нашей сети 2-3 узла
+        работает достаточно: реальный пакет на SF10/14 дБм даёт RSSI -40..-80,
+        тишина — около -120..-130. Порог -100 дБм отделяет одно от другого.
+        Чип должен быть в RX-режиме на момент вызова."""
+        return self.get_instant_rssi() > threshold_dbm
 
     def read_rx(self) -> Optional[RxResult]:
         """
