@@ -813,23 +813,34 @@ static void web_task(void* /*arg*/) {
 }
 
 // ---------------------------------------------------------------------------
-// Listen-before-talk: до 4 попыток scanChannel() перед TX.
-// scanChannel блокирует на ~2 символа (≈8 мс на SF10/BW125) и возвращает
-// RADIOLIB_LORA_DETECTED если в эфире кто-то говорит, RADIOLIB_CHANNEL_FREE
-// если чисто. Если стабильно занято — передаём всё равно (пакет важен).
-// После scanChannel чип в STDBY_RC; transmit() сам переведёт в TX.
-// Внимание: g_rx_flag может взвестись из-за CAD IRQ — сбрасываем явно.
+// Listen-before-talk по Meshtastic-стилю (RadioLibInterface::canSendImmediately).
+// Перед TX делаем CAD-scan: чип ловит LoRa-преамбулу за ~2 символа (≈8 мс
+// на SF10/BW125). Если активность есть — экспоненциальный backoff и retry.
+// Если CW исчерпался — передаём всё равно (пакет важен, особенно SOS).
+//
+// КРИТИЧНО: scanChannel() переключает IRQ-маску чипа на CAD-события и
+// затирает наш RX-callback из setPacketReceivedAction. Без явного восстановления
+// после CAD приёмник физически работает, но ISR не дёргается → g_rx_flag не
+// взводится → process_rx() не зовётся → сообщения от базы теряются.
+// Поэтому в конце восстанавливаем callback. Это то место, где у нас в
+// прошлой попытке RX «молча умирал».
 static bool wait_for_clear_channel() {
-    for (int i = 0; i < 4; i++) {
+    const uint16_t CW_MS_MIN = 60;     // contention window нижняя граница
+    uint16_t cw_ms_max       = 200;    // верхняя граница, растёт при retry
+    bool was_clear = false;
+    for (int i = 0; i < 5; i++) {
         int state = radio.scanChannel();
-        g_rx_flag = false;
-        if (state == RADIOLIB_CHANNEL_FREE) return true;
-        // Канал занят — случайный backoff 80-330 мс. Случайность важна:
-        // если оба узла сделают одинаковый backoff, после ожидания они
-        // снова попытаются TX одновременно — ничего не изменится.
-        delay(80 + (esp_random() & 0xFF));
+        if (state == RADIOLIB_CHANNEL_FREE) { was_clear = true; break; }
+        // Канал занят — случайный backoff в текущем CW. Окно растёт
+        // экспоненциально (200/400/800/1500): уменьшает шанс что узлы
+        // снова попадут в один такт после ожидания.
+        uint16_t span = cw_ms_max - CW_MS_MIN;
+        delay(CW_MS_MIN + (esp_random() % span));
+        cw_ms_max = (cw_ms_max < 1500) ? cw_ms_max * 2 : 1500;
     }
-    return false;
+    // Восстанавливаем RX-callback после CAD (см. комментарий выше).
+    radio.setPacketReceivedAction(on_rx_done);
+    return was_clear;
 }
 
 // Передать один пакет в эфир. Возвращает true при успехе.
@@ -839,10 +850,12 @@ static bool transmit_packet(const MeshPacket& pkt, const char* tag) {
     uint8_t buf[MESH_PACKET_SIZE];
     MeshCodec::encode(pkt, buf);
 
-    // LBT — пропустим лишнюю collision-у когда оператор только что нажал
-    // отправить, а у нас тоже PING на подходе. Не страшно если занято —
-    // wait_for_clear_channel сам вернёт после короткого ожидания.
-    wait_for_clear_channel();
+    // CSMA/CA: дождёмся пока эфир освободится, или передадим как есть
+    // если так и не освободился. После TX мы всё равно вернёмся в RX.
+    bool clear = wait_for_clear_channel();
+    if (!clear) {
+        Serial.println(F("[LBT] канал занят, шлём всё равно"));
+    }
 
     unsigned long t0 = millis();
     int state = radio.transmit(buf, MESH_PACKET_SIZE);
@@ -869,6 +882,11 @@ static bool transmit_packet(const MeshPacket& pkt, const char* tag) {
     if (rx_state != RADIOLIB_ERR_NONE) {
         Serial.printf("[RX] startReceive после TX FAIL code=%d\n", rx_state);
     }
+    // Перестраховка: переустановим RX callback. wait_for_clear_channel()
+    // его уже восстановил, но сам transmit() / startReceive() в RadioLib
+    // тоже трогают IRQ-маску — без этой строки изредка ловили «чип в RX,
+    // ISR молчит». Стоит копейки.
+    radio.setPacketReceivedAction(on_rx_done);
 
     return state == RADIOLIB_ERR_NONE;
 }
