@@ -86,14 +86,17 @@ ENV редактируется в `/etc/systemd/system/mesh-rescue-api.service` 
 | GET   | `/tiles/{z}/{x}/{y}.png`     | оффлайн-тайлы карты (если `TILES_DIR` существует) |
 | GET   | `/api/health`                | живой ли сервис |
 | GET   | `/api/stats`                 | счётчики (всего PING/SOS, активных устройств) |
-| GET   | `/api/tourists`              | кто сейчас активен (PING за последние 10 мин) |
-| GET   | `/api/devices`               | весь реестр устройств |
+| GET   | `/api/tourists`              | кто сейчас активен (PING за последние `ACTIVE_THRESHOLD_MIN`); база (`BASE_DEVICE_ID`) исключена |
+| GET   | `/api/devices`               | весь реестр устройств; база исключена |
 | GET   | `/api/pings?device_id=&hours=&limit=` | трек одного или всех |
 | GET   | `/api/sos?only_open=true`    | SOS-события |
 | GET   | `/api/sos/{id}`              | один SOS |
 | POST  | `/api/sos/{id}/ack`          | подтвердить SOS, body `{"acked_by": <device_id>}` |
 | POST  | `/api/sos/{id}/resolve`      | закрыть инцидент, body `{"notes": "..."}` |
+| GET   | `/api/messages?limit=100`    | лента CHAT-сообщений (с JOIN на `devices.name`) |
+| POST  | `/api/messages`              | ответ оператора туристам, body `{"text": "..."}` (≤48 байт UTF-8). 3 копии в `outgoing_chat` |
 | POST  | `/api/chat`                  | прокси к `gigachat-agent` (`http://127.0.0.1:8001/chat`), body `{message, history}` |
+| POST  | `/api/admin/purge`           | очистка таблиц БД, body `{"confirm": "ОЧИСТИТЬ", "tables": [...]}` |
 | WS    | `/ws`                        | push-канал, см. ниже |
 
 Авто-документация Swagger UI: `http://<rpi5-ip>:8000/docs`
@@ -105,17 +108,47 @@ Push-only канал. После `connect()` сервер шлёт JSON-сооб
 ```json
 {"event": "ping", "data": { /* модель Ping */ }}
 {"event": "sos",  "data": { /* модель Sos  */ }}
+{"event": "chat", "data": { /* модель ChatMessage */ }}
 ```
 
 Реализация: [`ws.py::Broadcaster`](rescue_api/ws.py) держит набор
 подключённых WebSocket'ов и фоновую asyncio-задачу, которая раз в
-секунду вычитывает из SQLite строки с `id > last_seen_id` и рассылает
-их всем клиентам. Стартовая точка `last_seen_id` = `MAX(id)` на момент
-запуска rescue-api — старые записи в WS не пушим, иначе дашборд при
-открытии получит несколько тысяч PING-ов разом.
+секунду вычитывает из SQLite строки с `id > last_seen_id` для трёх
+таблиц (`pings`, `sos_events`, `chat_messages`) и рассылает их всем
+клиентам. Стартовая точка `last_seen_id` = `MAX(id)` на момент запуска
+rescue-api — старые записи в WS не пушим.
+
+`reset_counters()` сбрасывает все три счётчика — вызывается из
+`/api/admin/purge` после очистки. Без этого после purge новые id
+пойдут с 1, а broadcaster ждёт `id > old_max` — пакеты бы не доходили
+до дашборда без рестарта.
 
 Один сервер — один Broadcaster — несколько подключений. Несколько
 вкладок дашборда нормально работают параллельно.
+
+---
+
+## Чат база → турист (POST /api/messages)
+
+Связь с lora-station — **только через SQLite**, никаких прямых HTTP-вызовов.
+
+Workflow:
+1. Дашборд: `POST /api/messages {"text": "..."}`
+2. rescue-api валидирует (≤48 байт UTF-8), `db.ensure_base_device()`
+   гарантирует FK-row в `devices` (без этого первый INSERT в `chat_messages`
+   падал бы с FOREIGN KEY constraint)
+3. `db.insert_base_chat()` → строка в `chat_messages` (для UI; WS
+   broadcaster через секунду пушнёт `event: chat`)
+4. `db.insert_outgoing_chat()` × **3** — три копии для retransmit.
+   Зачем 3: half-duplex collision при синхронной TX. Подробнее в
+   [`CLAUDE.md`](../../CLAUDE.md) → «Известные ограничения»
+5. lora-station outbox-poller выгребает по 1 пакету в секунду
+
+`BASE_DEVICE_ID = int(os.environ.get("NODE_DEVICE_ID", "0x0001"), 0)` —
+должен совпадать с `NODE_DEVICE_ID` в lora-station. При первом вызове
+`ensure_base_device()` в `devices` создаётся запись `(device_id=1,
+name='База спасателей', channel=1=RESCUE)`. Эта запись фильтруется из
+`/api/tourists` и `/api/devices` через `exclude_device_id=BASE_DEVICE_ID`.
 
 ## Статика дашборда
 

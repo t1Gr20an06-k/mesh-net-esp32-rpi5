@@ -1,203 +1,363 @@
 # API Reference
 
-## rescue-api (порт 8000)
-
-Base URL: `http://<rescue-base-ip>:8000` или `http://localhost:8000`
+Источник истины: код в `services/rescue-api/rescue_api/app.py`.
+Swagger UI доступен в браузере: `http://<rpi5-ip>:8000/docs`.
 
 ---
 
-### GET /devices
+## rescue-api (порт 8000)
 
-Список всех зарегистрированных устройств.
+Base URL: `http://<rescue-base-ip>:8000` (по LAN) или `http://localhost:8000`.
 
-**Response:**
+CORS открыт по умолчанию (для разработки), управляется ENV `ALLOW_CORS`.
+
+### Утилитарные
+
+#### `GET /api/health`
+
+Жив ли сервис. Не логируется.
+
+```json
+{"status": "ok"}
+```
+
+#### `GET /api/stats`
+
+Счётчики из БД.
+
+```json
+{
+  "pings_total": 142,
+  "sos_total": 3,
+  "sos_open": 1,
+  "devices_total": 2,
+  "devices_online": 1
+}
+```
+
+`devices_online` — устройства, у которых был PING за последние
+`ACTIVE_THRESHOLD_MIN=2` минуты (см. `db.py`).
+
+---
+
+### Туристы и устройства
+
+#### `GET /api/tourists`
+
+Кто сейчас в эфире. База (`NODE_DEVICE_ID`) исключена из выдачи.
+
 ```json
 [
   {
-    "device_id": 71,
-    "name": "Иванов П.",
-    "type": "tourist",
-    "registered": 1700000000,
-    "last_seen": 1700001234,
-    "last_lat": 43.355123,
-    "last_lon": 42.514567,
-    "online": true
+    "device_id": 16,
+    "name": "",
+    "channel": 0,
+    "channel_label": "TOURIST",
+    "last_seen_at": "2026-05-09T22:13:51Z",
+    "last_ping_at": "2026-05-09T22:13:51Z",
+    "position": {"lat": 44.094948, "lon": 39.095679},
+    "battery_pct": 100,
+    "rssi": -42
   }
 ]
 ```
 
-`online = true` если последний PING < 10 минут назад.
+#### `GET /api/devices`
+
+Весь реестр (кроме базы). Аналогично `/api/tourists`, но без фильтра
+по «активности».
 
 ---
 
-### GET /devices/{device_id}/track
+### Треки
 
-GPS-трек устройства.
+#### `GET /api/pings?device_id=&hours=&limit=`
 
-**Query params:**
-- `hours` (int, default=24) — за последние N часов
+PING'и для рисования трека.
 
-**Response:**
+| Query | Default | Описание |
+|-------|---------|----------|
+| `device_id` | (без фильтра) | uint16 ID устройства |
+| `hours` | `1.0` | Глубина выборки (max 720) |
+| `limit` | `500` | Max количество точек (max 10000) |
+
 ```json
-{
-  "device_id": 71,
-  "name": "Иванов П.",
-  "points": [
-    {"lat": 43.355, "lon": 42.514, "ts": 1700001000, "rssi": -85},
-    {"lat": 43.356, "lon": 42.515, "ts": 1700001060, "rssi": -82}
-  ]
-}
+[
+  {
+    "id": 142,
+    "device_id": 16,
+    "received_at": "2026-05-09T22:13:51Z",
+    "position": {"lat": 44.094948, "lon": 39.095679},
+    "battery_pct": 100,
+    "rssi": -42,
+    "rssi_last": 0,
+    "seq": 23
+  }
+]
 ```
 
 ---
 
-### GET /sos
+### SOS
 
-Список SOS-событий.
+#### `GET /api/sos?only_open=true`
 
-**Query params:**
-- `active_only` (bool, default=true) — только неподтверждённые
+Список SOS-событий. По умолчанию только незакрытые.
 
-**Response:**
 ```json
 [
   {
     "id": 1,
-    "device_id": 71,
-    "name": "Иванов П.",
-    "lat": 43.355,
-    "lon": 42.514,
-    "ts": 1700001000,
-    "payload": "Травма ноги",
-    "acknowledged": false,
-    "minutes_ago": 14
+    "device_id": 16,
+    "received_at": "2026-05-09T22:00:31Z",
+    "position": {"lat": 44.0949, "lon": 39.0956},
+    "sos_type": 1,
+    "sos_type_label": "падение",
+    "message": "",
+    "acked": false,
+    "acked_at": null,
+    "acked_by": null,
+    "resolved": false,
+    "resolved_at": null,
+    "notes": ""
   }
 ]
 ```
 
----
+`sos_type_label`: `неизвестно` / `падение` / `медицина` / `заблудился` / `погода`.
 
-### POST /sos/{sos_id}/ack
+#### `GET /api/sos/{id}`
 
-Подтвердить SOS (помощь выслана).
+Один SOS по id. 404 если не найден.
 
-**Body:**
+#### `POST /api/sos/{id}/ack`
+
+Подтвердить SOS (оператор увидел). Идемпотентно: повторный ack не
+перезаписывает `acked_at` — важно юридически (время первого ack).
+
 ```json
-{"rescuer_device_id": 256}
+// body
+{"acked_by": 16}
 ```
 
-**Response:** `{"status": "ok"}`
+Возвращает обновлённый объект SOS.
+
+#### `POST /api/sos/{id}/resolve`
+
+Закрыть инцидент. Можно сразу после `ack` или вообще без него.
+
+```json
+// body
+{"notes": "Помощь оказана, турист найден"}
+```
 
 ---
 
-### GET /stats
+### Чат турист↔база
 
-Общая статистика маршрута.
+#### `GET /api/messages?limit=100`
 
-**Response:**
+Последние N сообщений в хронологическом порядке (старые → новые).
+Включает и сообщения от туристов, и ответы базы (от `device_id=NODE_DEVICE_ID`).
+
 ```json
+[
+  {
+    "id": 5,
+    "device_id": 16,
+    "device_name": "",
+    "received_at": "2026-05-09T22:13:46Z",
+    "position": {"lat": 44.0949, "lon": 39.0956},
+    "channel": 0,
+    "channel_label": "TOURIST",
+    "message": "Дошли до приюта"
+  },
+  {
+    "id": 6,
+    "device_id": 1,
+    "device_name": "База спасателей",
+    "received_at": "2026-05-09T22:14:02Z",
+    "position": null,
+    "channel": 0,
+    "channel_label": "TOURIST",
+    "message": "Принял, оставайтесь на связи"
+  }
+]
+```
+
+`position: null` — если координат нет (пакеты от базы) или фикс `(0,0)`.
+
+#### `POST /api/messages`
+
+Ответ оператора туристам. Текст ≤ 48 байт UTF-8 (≈ 24 русских буквы).
+
+```json
+// body
+{"text": "Принял, оставайтесь на связи"}
+```
+
+Возвращает созданный объект `ChatMessage`. Параллельно:
+- `INSERT INTO chat_messages` (для UI, появится в WS-event `chat`)
+- `INSERT INTO outgoing_chat × 3` (для retransmit, lora-station выгребает
+  по 1 в сек и шлёт в эфир)
+
+Ошибки: 400 при пустом тексте или > 48 байт UTF-8.
+
+---
+
+### AI-диспетчер
+
+#### `POST /api/chat`
+
+Прокси на gigachat-agent (`http://127.0.0.1:8001/chat`). Используется
+дашбордом для верхней чат-панели.
+
+```json
+// body
 {
-  "active_tourists": 7,
-  "active_sos": 1,
-  "pings_last_hour": 42,
-  "last_ping_ts": 1700001234,
-  "total_devices": 12
+  "message": "Кто сейчас в эфире?",
+  "history": [
+    {"role": "user", "content": "..."},
+    {"role": "assistant", "content": "..."}
+  ]
 }
 ```
 
----
-
-### POST /devices
-
-Зарегистрировать новое устройство.
-
-**Body:**
 ```json
-{"device_id": 72, "name": "Петрова А.", "type": "tourist"}
-```
-
----
-
-### WebSocket /ws
-
-Real-time события для дашборда.
-
-**Подключение:** `ws://<host>/ws`
-
-**События (JSON):**
-
-```json
-// Новый PING
-{"event": "ping", "device_id": 71, "lat": 43.355, "lon": 42.514, "ts": 1700001300}
-
-// SOS
-{"event": "sos", "device_id": 71, "lat": 43.355, "lon": 42.514, "ts": 1700001400, "payload": "Травма"}
-
-// ACK SOS
-{"event": "sos_ack", "sos_id": 1, "device_id": 71}
-
-// Новое сообщение чата
-{"event": "chat", "device_id": 71, "channel": 0, "payload": "Все в порядке", "ts": 1700001350}
-```
-
----
-
-## gigachat-agent (порт 8001)
-
-### POST /ask
-
-Текстовый запрос к GigaChat AI.
-
-**Body:**
-```json
-{"question": "Сколько туристов сейчас на маршруте?"}
-```
-
-**Response:**
-```json
+// response
 {
-  "answer": "На маршруте 7 активных туристов. Последний сигнал получен 3 минуты назад от устройства #047 (Сидоров В.).",
-  "tool_calls": ["get_tourists", "get_stats"],
-  "latency_ms": 1240
+  "reply": "Один турист, device_id=16, последний PING 30 сек назад.",
+  "tools_used": ["get_active_tourists"]
 }
 ```
 
-**Доступные function-calling инструменты:**
-
-| Функция | Описание |
-|---------|----------|
-| `get_tourists()` | Список активных туристов с координатами |
-| `get_sos()` | Активные SOS-сигналы |
-| `get_location(device_id: int)` | Последние координаты устройства |
-| `get_stats()` | Общая статистика маршрута |
+При недоступности AI возвращает 200 с `{"reply": "", "tools_used": [], "error": "AI недоступен (...)"}` — дашборд показывает красным.
 
 ---
 
-## relay-node API (порт 8002, только на инфо-точке)
+### Админ
 
-### POST /sos
+#### `POST /api/admin/purge`
 
-Отправить SOS с инфо-точки (через кнопку на портале).
+Очистка таблиц БД для отладки. Защита от случайного вызова — поле
+`confirm` должно быть строкой `ОЧИСТИТЬ`.
 
-**Body:**
 ```json
-{"payload": "Нужна помощь у информационной точки"}
+// body
+{
+  "confirm": "ОЧИСТИТЬ",
+  "tables": ["pings", "sos_events", "chat_messages", "outgoing_chat", "devices"]
+}
 ```
 
-**Response:** `{"status": "sent", "packet_id": "abc123"}`
+Допустимые таблицы: `pings`, `sos_events`, `chat_messages`,
+`outgoing_chat`, `devices`. Если в списке `devices` — каскадно
+зачищаются все дочерние таблицы (FK constraint).
 
-### GET /status
+Сбрасывает `sqlite_sequence` для затронутых таблиц + сбрасывает
+`last_seen_id` в WS-broadcaster (иначе после purge новые ID < 0 и
+push'и теряются).
 
-Статус инфо-точки: заряд батареи, RSSI последнего пакета, uptime.
+```json
+// response
+{"ok": true, "deleted": {"pings": 142, "outgoing_chat": 3}}
+```
+
+Ошибки: 400 при пустом `tables` или неизвестных именах, 403 при
+неверном `confirm`.
+
+---
+
+### WebSocket `/ws`
+
+Push-канал для дашборда. Сервер шлёт JSON, клиент ничего слать не
+обязан (но может — игнорируется).
+
+```json
+{"event": "ping", "data": { /* объект Ping */ }}
+{"event": "sos",  "data": { /* объект Sos  */ }}
+{"event": "chat", "data": { /* объект ChatMessage */ }}
+```
+
+Реализация: `Broadcaster` в [`ws.py`](../services/rescue-api/rescue_api/ws.py).
+Раз в секунду читает `MAX(id)` из `pings`/`sos_events`/`chat_messages` и
+пушит новые строки. Стартовая точка — текущий `MAX(id)`, чтобы при
+подключении дашборд не получил тысячи старых записей.
+
+---
+
+### Тайлы карты
+
+#### `GET /tiles/{z}/{x}/{y}.png`
+
+Оффлайн-тайлы Leaflet. Каталог монтируется через `StaticFiles` из
+`TILES_DIR` (default `/var/lib/mesh-net/tiles`). Файлы скачиваются один
+раз через `scripts/import_tiles/download_tiles.py`. Если каталога нет —
+эндпоинт не монтируется, дашборд показывает серый фон с маркерами.
+
+---
+
+## gigachat-agent (127.0.0.1:8001)
+
+Не выставляется наружу — все обращения идут через прокси rescue-api
+`/api/chat`. Прямой доступ нужен только для отладки на самом RPi5.
+
+#### `GET /health`
+
+```json
+{"status": "ok", "auth_mode": "authorization_key", "model": "GigaChat", "scope": "GIGACHAT_API_PERS"}
+```
+
+`auth_mode`: `authorization_key` / `access_token` / `none`.
+
+#### `POST /chat`
+
+Идентичный body/response с `POST /api/chat` rescue-api.
+
+**Function calling — 4 инструмента:**
+
+| Имя | Описание | Идёт в rescue-api |
+|-----|----------|-------------------|
+| `get_active_tourists` | Кто в эфире | `GET /api/tourists` |
+| `get_sos_events` | SOS-инциденты | `GET /api/sos?only_open=` |
+| `get_device_track` | Трек устройства | `GET /api/pings?device_id=&hours=` |
+| `get_stats` | Общие счётчики | `GET /api/stats` |
+
+Подробнее: [`tools.py`](../services/gigachat-agent/gigachat_agent/tools.py).
+
+---
+
+## ESP32 — встроенный HTTPS-сервер (192.168.4.1:443)
+
+Self-signed cert. Доступен после подключения к Wi-Fi `MeshNet-016`.
+
+| Метод | URL | Что делает |
+|-------|-----|------------|
+| GET | `/` | HTML-страница терминала туриста (вшита в прошивку) |
+| POST | `/api/sos` | body = одна цифра (0..4) — sos_type, взводит бёрст |
+| POST | `/api/gps` | body = `lat,lon` — обновляет координаты для следующего PING |
+| POST | `/api/chat` | body = UTF-8 текст до 48 байт — взводит CHAT-бёрст |
+| GET | `/api/status` | `idle` / `tx:N` / `done` — для polling SOS-индикатора |
+| GET | `/api/inbox?since=N` | JSON `{latest, messages[]}` — входящие CHAT'ы |
+
+`/api/inbox` ответ:
 
 ```json
 {
-  "uptime_seconds": 86400,
-  "battery_percent": 78,
-  "last_rssi": -91,
-  "packets_relayed_today": 234
+  "latest": 3,
+  "messages": [
+    {
+      "id": 3,
+      "from": 1,
+      "age_ms": 12340,
+      "text": "Принял, оставайтесь на связи"
+    }
+  ]
 }
 ```
+
+`from` — device_id отправителя; `1` означает базу (показывается с золотым
+акцентом «🛟 База спасателей»).
 
 ---
 
@@ -206,6 +366,8 @@ Real-time события для дашборда.
 | Код | Описание |
 |-----|----------|
 | 200 | OK |
-| 404 | Устройство / событие не найдено |
-| 422 | Ошибка валидации параметров |
-| 503 | GigaChat API недоступен (только для /ask) |
+| 400 | Невалидный body (пустое сообщение, не JSON, плохие параметры) |
+| 403 | Подтверждение purge не совпало (`confirm != "ОЧИСТИТЬ"`) |
+| 404 | Объект не найден (`/api/sos/{id}` для несуществующего id) |
+| 422 | FastAPI validation (`pydantic`) — типы в body |
+| 500 | Внутренняя ошибка (например БД недоступна) |

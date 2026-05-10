@@ -23,11 +23,12 @@ Python-демон для работы с LoRa SX1262 (модуль HT-RA62) на
 services/lora-station/
 ├── lora_station/
 │   ├── __init__.py
-│   ├── __main__.py     — точка входа: argparse, главный цикл, SIGINT/SIGTERM
-│   ├── packet.py       — кодек 64-байтного пакета (CRC-16/CCITT-FALSE)
-│   ├── sx1262.py       — драйвер SX1262: init, RX, TX, IRQ через lgpio
-│   ├── db.py           — SQLite-обёртка (upsert device, insert ping/sos/chat)
-│   ├── mesh.py         — DedupCache, TxQueue (приоритеты), make_forward
+│   ├── __main__.py     — точка входа: argparse, главный цикл, SIGINT/SIGTERM, outbox-poller
+│   ├── packet.py       — кодек 64-байтного пакета (CRC-16/CCITT-FALSE) + sanity-проверки полей
+│   ├── sx1262.py       — драйвер SX1262: init, RX, TX, IRQ через lgpio + GetRssiInst для LBT
+│   ├── db.py           — SQLite-обёртка: upsert device, insert ping/sos/chat,
+│   │                     fetch_pending/mark_outgoing_chat_sent, авто-миграция
+│   ├── mesh.py         — DedupCache (по hash(payload) для CHAT/SOS/ACK), TxQueue, make_forward
 │   └── dispatcher.py   — decoded packet → БД + ретрансляция
 ├── requirements.txt    — пусто (lgpio тащим apt'ом, см. install.sh)
 └── install.sh          — установка на RPi5 (apt + venv, init БД, проверка SPI)
@@ -148,15 +149,78 @@ GPIO HT-RA62.
 
 - **SOS никогда не дропается** — ни в `TxQueue` (приоритет 0), ни в БД
 - **Дедупликация**: ключ `(type, device_id, seq)` для PING; для остальных —
-  `(type, device_id, секунды)`. TTL кеша = 30 с
+  `(type, device_id, hash(payload))`. TTL кеша = 30 с. Раньше было
+  `int(time.monotonic())` для CHAT/SOS/ACK — это был баг: SOS-бёрст
+  (3 пакета × 500 мс) попадал в 2-3 разные секунды, и в БД оказывалось
+  3 строки. С `hash(payload)` идентичные копии корректно схлопываются
 - **Эхо собственных пакетов**: если `pkt.device_id == NODE_DEVICE_ID` —
   игнорируем (мы только что сами это передавали)
 - **TTL−1**: `make_forward` создаёт новый пакет с уменьшенным TTL; если
   было 1 — не ретранслируем
 - **CRC-ошибки**: считаются отдельно (`crc_bad`), в БД не пишутся
+- **Sanity-проверки декодера** в `packet.py::decode`: после CRC проверяем
+  `version=1`, `type∈[0..3]`, `channel∈[0..1]`, `ttl∈[1..8]`. Без этого
+  шум с случайно совпавшим CRC создаёт «фантомные» устройства в БД
+  (был реальный инцидент с `device_id=12345`)
 - **Ничего не пишем в `pings.receiver_rssi`** для SOS — в схеме БД
   колонка `receiver_rssi` есть только в `pings`, в `sos_events` — нет.
-  При желании добавить — миграция через `scripts/db_init/migrate_NNN.sql`
+  При желании добавить — миграция через `_migrate()` в `db.py`
+
+---
+
+## Outbox для ответов оператора (CHAT база → турист)
+
+Связь с rescue-api идёт **только через SQLite** — никаких прямых API
+вызовов между сервисами. rescue-api при `POST /api/messages` пишет 3
+строки в `outgoing_chat` (для retransmit). lora-station в основном цикле
+раз в `OUTBOX_POLL_S=1.0` сек:
+
+1. `db.fetch_pending_outgoing_chat(limit=1)` — берёт **одну** старейшую
+   pending-строку (где `sent_at IS NULL`). limit=1 КРИТИЧНО: если брать
+   все pending сразу, они уйдут в TxQueue вплотную друг за другом и
+   ESP32 не успеет переключиться в RX между копиями
+2. Формирует `MeshPacket(type=CHAT, device_id=node_id, channel=TOURIST)`
+3. `tx_q.push(pkt)` — попадёт в TxQueue с приоритетом CHAT
+4. `db.mark_outgoing_chat_sent(row_id)` — `UPDATE sent_at`
+
+Между копиями получается ~1 сек реальной паузы на железе — этого хватает
+ESP32 чтобы вернуться в RX и услышать следующую попытку.
+
+`outgoing_chat` создаётся автоматически при старте (см.
+`Database._migrate()` — идемпотентный CREATE TABLE IF NOT EXISTS),
+так что после `git pull` запускать `init.sh` не нужно.
+
+---
+
+## CSMA/LBT перед каждым TX
+
+Цель — не передавать когда в эфире уже кто-то говорит. LoRa полу-дуплекс,
+collision означает потерю пакета у обоих узлов.
+
+В основном цикле перед `radio.transmit()`:
+
+```python
+# 1. Pre-LBT jitter — расходит синхронные передачи во времени.
+#    Без этого если оба узла одновременно вошли в LBT — оба видят
+#    «свободно» и оба уходят в TX.
+time.sleep(random.uniform(0.0, 0.4))
+
+# 2. До 4 попыток carrier-sense через GetRssiInst (0x15)
+lbt_attempts = 0
+while lbt_attempts < 4 and radio.channel_busy(threshold_dbm=-100):
+    backoff = random.uniform(0.15, 0.6)
+    time.sleep(backoff)
+    lbt_attempts += 1
+# Если канал стабильно занят — передаём всё равно (особенно для SOS)
+```
+
+`channel_busy()` это `get_instant_rssi() > -100 dBm`. Грубо, но в нашей
+сети с 2-3 узлами работает: реальный пакет даёт RSSI −40..−80, тишина
+около −120..−130. CAD (как на ESP32) точнее, но требует переписать IRQ-
+обработку — в Python через lgpio это значительная работа.
+
+Аналогичный механизм на ESP32 — `radio.scanChannel()` (CAD), см.
+`firmware/esp32-terminal/src/main.cpp::wait_for_clear_channel`.
 
 ## Переменные окружения
 
