@@ -102,24 +102,37 @@ gigachat-agent :8001       (только 127.0.0.1, наружу не свети
     ▼
 api.sberbank.ru/gigachat   (function calling)
     │
-    │ обратные вызовы инструментов:
+    │ обратные вызовы инструментов (8 шт.):
     │   get_active_tourists → GET rescue-api/api/tourists
-    │   get_sos_events      → GET rescue-api/api/sos
-    │   get_device_track    → GET rescue-api/api/pings?device_id=
-    │   get_stats           → GET rescue-api/api/stats
+    │   get_all_devices     → GET rescue-api/api/devices
+    │   get_sos_events      → GET rescue-api/api/sos?only_open=&device_id=&hours=&sos_type=
+    │   get_sos_details     → GET rescue-api/api/sos/{id}
+    │   get_device_track    → GET rescue-api/api/pings?device_id=&hours=
+    │   get_chat_history    → GET rescue-api/api/messages?device_id=&limit=
+    │   find_device         → GET rescue-api/api/devices/find?q=
+    │   get_stats           → GET rescue-api/api/stats   (расширенная: breakdown по типам SOS, top-3, 24ч)
 ```
 
-## Function calling — 4 инструмента
+## Function calling — 8 инструментов
 
 См. `tools.py::TOOL_DEFS`. Описания пишем подробно — модель решает что
-позвать **исходя из текста description** (плюс контекст). Кратко:
+позвать **исходя из текста description** (плюс контекст).
 
 | Инструмент | Что делает | rescue-api |
 |---|---|---|
-| `get_active_tourists` | Кто в эфире (PING < 10 мин) | `GET /api/tourists` |
-| `get_sos_events`      | SOS-события (по умолчанию открытые) | `GET /api/sos?only_open=` |
+| `get_active_tourists` | Кто СЕЙЧАС в эфире (PING < `ACTIVE_THRESHOLD_MIN`) | `GET /api/tourists` |
+| `get_all_devices`     | Полный реестр устройств, включая offline | `GET /api/devices` |
+| `get_sos_events`      | SOS с фильтрами `only_open` / `device_id` / `hours` / `sos_type` + JOIN с `devices.name` | `GET /api/sos` |
+| `get_sos_details`     | Один SOS по id со всеми полями (acked_by/at, resolved_at, notes) | `GET /api/sos/{id}` |
 | `get_device_track`    | Трек одного устройства за N часов | `GET /api/pings?device_id=&hours=` |
-| `get_stats`           | Общие счётчики системы | `GET /api/stats` |
+| `get_chat_history`    | Лента CHAT-сообщений; с `device_id` — диалог одного туриста + ответы базы | `GET /api/messages` |
+| `find_device`         | Поиск по части имени или числовому id (для имени → device_id) | `GET /api/devices/find?q=` |
+| `get_stats`           | Расширенные счётчики: всего/24ч PING/SOS, разбивка SOS по типам и статусам, топ-3 устройств по pings | `GET /api/stats` |
+
+Цепочки вызовов (одобряемые промптом):
+- `find_device("Вася")` → берём `device_id` из ответа → `get_device_track(device_id=…)`
+- `find_device("Вася")` → `get_chat_history(device_id=…)`
+- `get_sos_events(device_id=16)` → для интересного — `get_sos_details(sos_id=…)`
 
 Цикл в `agent.py::Agent.ask`:
 

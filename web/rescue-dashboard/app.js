@@ -335,12 +335,39 @@ function connectWS() {
 }
 
 // --- Чат с ИИ-диспетчером ---------------------------------------------------
-// История держится только в памяти страницы — F5 = чистый лист.
-// Это сознательно: оператор обычно начинает смену с актуальной картины,
-// а не с разговора предыдущей смены. На сервере ничего не сохраняется.
+// История живёт в localStorage — F5 НЕ стирает её. Чистится только по
+// кнопке ✕ (см. initChat). На сервере по-прежнему ничего не хранится:
+// каждый /api/chat шлёт нужный кусок истории отдельно.
 
-const chatHistory = [];   // [{role:'user'|'assistant', content:'...'}, ...]
+const CHAT_STORAGE_KEY = 'mesh-ai-chat-history';
 const CHAT_HISTORY_LIMIT = 20;   // последние N ходов в каждый /api/chat
+// Полную историю чата держим без ограничений в localStorage; CHAT_HISTORY_LIMIT
+// относится только к тому, сколько последних ходов уезжает в GigaChat.
+
+let chatHistory = [];   // [{role:'user'|'assistant', content:'...'}, ...]
+
+function loadChatHistory() {
+    try {
+        const raw = localStorage.getItem(CHAT_STORAGE_KEY);
+        if (!raw) return [];
+        const arr = JSON.parse(raw);
+        // Защита от мусорного содержимого: оставляем только записи с правильной формой.
+        return Array.isArray(arr) ? arr.filter(
+            t => t && (t.role === 'user' || t.role === 'assistant')
+                 && typeof t.content === 'string') : [];
+    } catch {
+        return [];
+    }
+}
+
+function saveChatHistory() {
+    try {
+        localStorage.setItem(CHAT_STORAGE_KEY, JSON.stringify(chatHistory));
+    } catch {
+        // localStorage может отвалиться (приватный режим, квота). Чат продолжит
+        // работать в памяти страницы, F5 просто потеряет историю — допустимо.
+    }
+}
 
 function chatAppend(node) {
     const log = $('#chat-log');
@@ -362,6 +389,7 @@ async function sendChatMessage(text) {
 
     chatAppend(chatBubble('chat-user', text));
     chatHistory.push({ role: 'user', content: text });
+    saveChatHistory();
 
     const thinking = chatAppend(chatBubble('chat-thinking', 'AI думает…'));
 
@@ -393,6 +421,7 @@ async function sendChatMessage(text) {
             }
             chatAppend(bubble);
             chatHistory.push({ role: 'assistant', content: data.reply || '' });
+            saveChatHistory();
         }
     } catch (e) {
         thinking.remove();
@@ -408,6 +437,17 @@ function initChat() {
     const form = $('#chat-form');
     const input = $('#chat-input');
     const clearBtn = $('#chat-clear');
+
+    // Восстанавливаем сохранённую историю из localStorage. Без этого блока
+    // F5 стирал бы переписку с AI — оператору неудобно, если он отвлёкся
+    // на инцидент и обновил страницу.
+    chatHistory = loadChatHistory();
+    const log = $('#chat-log');
+    for (const t of chatHistory) {
+        const cls = t.role === 'user' ? 'chat-user' : 'chat-assistant';
+        log.appendChild(chatBubble(cls, t.content));
+    }
+    log.scrollTop = log.scrollHeight;
 
     form.addEventListener('submit', (e) => {
         e.preventDefault();
@@ -426,7 +466,10 @@ function initChat() {
     });
 
     clearBtn.addEventListener('click', () => {
+        if (chatHistory.length > 0 &&
+            !confirm('Очистить историю переписки с AI? Это необратимо.')) return;
         chatHistory.length = 0;
+        try { localStorage.removeItem(CHAT_STORAGE_KEY); } catch {}
         $('#chat-log').innerHTML = '';
         chatAppend(chatBubble('chat-system', 'История очищена.'));
     });

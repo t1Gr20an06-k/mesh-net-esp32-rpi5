@@ -111,7 +111,7 @@ def health():
 @app.get("/api/stats", response_model=models.Stats)
 def stats():
     with db.db_read(DB_PATH) as conn:
-        return models.Stats(**db.get_stats(conn))
+        return models.Stats.from_dict(db.get_stats(conn))
 
 
 # ============================================================
@@ -137,6 +137,19 @@ def devices():
                 for r in db.list_devices(conn, exclude_device_id=BASE_DEVICE_ID)]
 
 
+@app.get("/api/devices/find", response_model=list[models.Device])
+def devices_find(q: str = Query(..., min_length=1, max_length=64,
+                                description="Часть имени или числовой id")):
+    """Поиск устройства по части имени или id. AI-инструмент find_device
+    зовёт сюда когда оператор пишет «где Вася» — модель не знает device_id."""
+    with db.db_read(DB_PATH) as conn:
+        rows = db.find_devices(conn, q)
+        # Не отдаём базу даже если её имя матчится — для согласованности
+        # с /api/devices и /api/tourists, которые её фильтруют.
+        return [models.Device.from_row(r) for r in rows
+                if r["device_id"] != BASE_DEVICE_ID]
+
+
 # ============================================================
 # Pings (треки)
 # ============================================================
@@ -158,9 +171,25 @@ def pings(
 # ============================================================
 
 @app.get("/api/sos", response_model=list[models.Sos])
-def sos(only_open: bool = Query(True, description="Только незакрытые инциденты")):
+def sos(
+    only_open: bool       = Query(True, description="Только незакрытые инциденты"),
+    device_id: int | None = Query(None, description="Фильтр по device_id"),
+    hours:     float | None = Query(None, gt=0, le=720,
+                                    description="Только за последние N часов"),
+    sos_type:  int | None = Query(None, ge=0, le=255,
+                                  description="Фильтр по типу SOS (0=неизвестно, 1=падение, 2=медицина, 3=заблудился, 4=погода)"),
+    limit:     int        = Query(200, gt=0, le=2000),
+):
+    """Список SOS с опциональными фильтрами. AI зовёт это с device_id
+    или sos_type когда оператор спрашивает что-то конкретное."""
     with db.db_read(DB_PATH) as conn:
-        return [models.Sos.from_row(r) for r in db.list_sos(conn, only_open)]
+        rows = db.list_sos(conn,
+                           only_open=only_open,
+                           device_id=device_id,
+                           hours=hours,
+                           sos_type=sos_type,
+                           limit=limit)
+        return [models.Sos.from_row(r) for r in rows]
 
 
 @app.get("/api/sos/{sos_id}", response_model=models.Sos)
@@ -202,11 +231,17 @@ def sos_resolve(sos_id: int, body: models.ResolveRequest):
 # Этап А: только чтение. Этап Б добавит POST для ответов от базы.
 
 @app.get("/api/messages", response_model=list[models.ChatMessage])
-def messages(limit: int = Query(100, gt=0, le=500,
-                                description="Сколько последних сообщений вернуть")):
-    """Последние N сообщений CHAT в хронологическом порядке (старые → новые)."""
+def messages(
+    limit:     int        = Query(100, gt=0, le=500,
+                                  description="Сколько последних сообщений вернуть"),
+    device_id: int | None = Query(None, description="Только диалог с этим устройством "
+                                                    "(включая ответы базы)"),
+):
+    """Последние N сообщений CHAT в хронологическом порядке (старые → новые).
+    С `device_id` — только сообщения этого устройства + ответы базы (один диалог)."""
     with db.db_read(DB_PATH) as conn:
-        return [models.ChatMessage.from_row(r) for r in db.list_chat(conn, limit)]
+        return [models.ChatMessage.from_row(r)
+                for r in db.list_chat(conn, limit=limit, device_id=device_id)]
 
 
 @app.post("/api/messages", response_model=models.ChatMessage)

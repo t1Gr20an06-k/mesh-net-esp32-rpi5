@@ -85,15 +85,16 @@ ENV редактируется в `/etc/systemd/system/mesh-rescue-api.service` 
 | GET   | `/style.css`, `/app.js`, `/lib/...` | статика дашборда |
 | GET   | `/tiles/{z}/{x}/{y}.png`     | оффлайн-тайлы карты (если `TILES_DIR` существует) |
 | GET   | `/api/health`                | живой ли сервис |
-| GET   | `/api/stats`                 | счётчики (всего PING/SOS, активных устройств) |
+| GET   | `/api/stats`                 | расширенные счётчики: всего/за 24ч PING/SOS, разбивка SOS по статусам (open/acked/resolved) и типам (`sos_by_type`), топ-3 устройств по `pings` |
 | GET   | `/api/tourists`              | кто сейчас активен (PING за последние `ACTIVE_THRESHOLD_MIN`); база (`BASE_DEVICE_ID`) исключена |
 | GET   | `/api/devices`               | весь реестр устройств; база исключена |
+| GET   | `/api/devices/find?q=`       | поиск устройства по части имени или числовому id (для AI-инструмента `find_device`) |
 | GET   | `/api/pings?device_id=&hours=&limit=` | трек одного или всех |
-| GET   | `/api/sos?only_open=true`    | SOS-события |
-| GET   | `/api/sos/{id}`              | один SOS |
+| GET   | `/api/sos?only_open=&device_id=&hours=&sos_type=&limit=` | SOS-события с фильтрами + JOIN на `devices.name` |
+| GET   | `/api/sos/{id}`              | один SOS со всеми полями + `device_name` |
 | POST  | `/api/sos/{id}/ack`          | подтвердить SOS, body `{"acked_by": <device_id>}` |
 | POST  | `/api/sos/{id}/resolve`      | закрыть инцидент, body `{"notes": "..."}` |
-| GET   | `/api/messages?limit=100`    | лента CHAT-сообщений (с JOIN на `devices.name`) |
+| GET   | `/api/messages?limit=&device_id=` | лента CHAT-сообщений; с `device_id` — диалог одного туриста + ответы базы |
 | POST  | `/api/messages`              | ответ оператора туристам, body `{"text": "..."}` (≤48 байт UTF-8). 3 копии в `outgoing_chat` |
 | POST  | `/api/chat`                  | прокси к `gigachat-agent` (`http://127.0.0.1:8001/chat`), body `{message, history}` |
 | POST  | `/api/admin/purge`           | очистка таблиц БД, body `{"confirm": "ОЧИСТИТЬ", "tables": [...]}` |

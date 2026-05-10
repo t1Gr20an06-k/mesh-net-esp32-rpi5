@@ -81,12 +81,49 @@ def get_stats(conn: sqlite3.Connection) -> dict:
             (SELECT COUNT(*) FROM pings)                                      AS pings_total,
             (SELECT COUNT(*) FROM sos_events)                                 AS sos_total,
             (SELECT COUNT(*) FROM sos_events WHERE resolved = 0)              AS sos_open,
+            (SELECT COUNT(*) FROM sos_events WHERE acked = 1 AND resolved = 0) AS sos_acked,
+            (SELECT COUNT(*) FROM sos_events WHERE resolved = 1)              AS sos_resolved,
             (SELECT COUNT(*) FROM devices)                                    AS devices_total,
             (SELECT COUNT(*) FROM devices
               WHERE last_seen_at > strftime('%Y-%m-%dT%H:%M:%SZ',
-                                            'now', '-' || :m || ' minutes')) AS devices_online
+                                            'now', '-' || :m || ' minutes')) AS devices_online,
+            (SELECT COUNT(*) FROM pings
+              WHERE received_at > strftime('%Y-%m-%dT%H:%M:%SZ',
+                                            'now', '-24 hours'))               AS pings_24h,
+            (SELECT COUNT(*) FROM sos_events
+              WHERE received_at > strftime('%Y-%m-%dT%H:%M:%SZ',
+                                            'now', '-24 hours'))               AS sos_24h
     """, {"m": ACTIVE_THRESHOLD_MIN}).fetchone()
-    return dict(row)
+    stats = dict(row)
+
+    # Разбивка SOS по типам — оператор спрашивает «сколько медицин было».
+    # GROUP BY возвращает только встретившиеся типы, нулей здесь нет —
+    # их подмешивает app/models, иначе тут пришлось бы захардкодить
+    # SOS_TYPE_LABELS, что лишняя связь между слоями.
+    type_rows = conn.execute("""
+        SELECT sos_type, COUNT(*) AS cnt
+        FROM sos_events
+        GROUP BY sos_type
+    """).fetchall()
+    stats["sos_by_type"] = {int(r["sos_type"]): int(r["cnt"]) for r in type_rows}
+
+    # Топ-3 устройств по числу PING'ов за всё время. Без JOIN на devices
+    # (вернётся id, а имя AI пусть тащит из get_all_devices если понадобится).
+    top_rows = conn.execute("""
+        SELECT p.device_id, COUNT(*) AS cnt, d.name AS name
+        FROM pings p
+        LEFT JOIN devices d ON d.device_id = p.device_id
+        GROUP BY p.device_id
+        ORDER BY cnt DESC
+        LIMIT 3
+    """).fetchall()
+    stats["top_devices_by_pings"] = [
+        {"device_id": int(r["device_id"]),
+         "name": r["name"] or "",
+         "pings": int(r["cnt"])}
+        for r in top_rows
+    ]
+    return stats
 
 
 # ============================================================
@@ -169,23 +206,80 @@ def list_pings(
 # Запросы — SOS
 # ============================================================
 
-def list_sos(conn: sqlite3.Connection, only_open: bool, limit: int = 200) -> List[sqlite3.Row]:
+def list_sos(
+    conn: sqlite3.Connection,
+    only_open: bool = True,
+    device_id: Optional[int] = None,
+    hours: Optional[float] = None,
+    sos_type: Optional[int] = None,
+    limit: int = 200,
+) -> List[sqlite3.Row]:
+    """Список SOS с опциональными фильтрами + JOIN на devices.name.
+    AI-агент часто спрашивает "какие SOS у Васи / за час / с типом падение"."""
+    where = []
+    params: dict = {"limit": limit}
     if only_open:
-        return conn.execute("""
-            SELECT * FROM sos_events
-            WHERE resolved = 0
-            ORDER BY received_at DESC
-            LIMIT :limit
-        """, {"limit": limit}).fetchall()
-    return conn.execute("""
-        SELECT * FROM sos_events
-        ORDER BY received_at DESC
+        where.append("s.resolved = 0")
+    if device_id is not None:
+        where.append("s.device_id = :did")
+        params["did"] = device_id
+    if hours is not None:
+        # См. комментарий в get_stats про strftime — формат таймстампа в БД 'T...Z'.
+        where.append("s.received_at > strftime('%Y-%m-%dT%H:%M:%SZ', "
+                     "'now', '-' || :hours || ' hours')")
+        params["hours"] = hours
+    if sos_type is not None:
+        where.append("s.sos_type = :stype")
+        params["stype"] = sos_type
+    where_sql = ("WHERE " + " AND ".join(where)) if where else ""
+    return conn.execute(f"""
+        SELECT s.*, d.name AS device_name
+        FROM sos_events s
+        LEFT JOIN devices d ON d.device_id = s.device_id
+        {where_sql}
+        ORDER BY s.received_at DESC
         LIMIT :limit
-    """, {"limit": limit}).fetchall()
+    """, params).fetchall()
 
 
 def get_sos(conn: sqlite3.Connection, sos_id: int) -> Optional[sqlite3.Row]:
-    return conn.execute("SELECT * FROM sos_events WHERE id = ?", (sos_id,)).fetchone()
+    """Один SOS со всеми деталями (acked_by/at, resolved_at, notes) + имя устройства."""
+    return conn.execute("""
+        SELECT s.*, d.name AS device_name
+        FROM sos_events s
+        LEFT JOIN devices d ON d.device_id = s.device_id
+        WHERE s.id = ?
+    """, (sos_id,)).fetchone()
+
+
+def find_devices(
+    conn: sqlite3.Connection,
+    query: str,
+    limit: int = 10,
+) -> List[sqlite3.Row]:
+    """Поиск устройства по части имени или числовому id.
+
+    Используется AI-инструментом find_device — оператор пишет «где Вася»,
+    модель не знает device_id, мы ищем подстроку в name. Если query — число,
+    дополнительно матчим точно по device_id (case 'device 16' тоже сюда).
+    """
+    q = (query or "").strip()
+    if not q:
+        return []
+    where = ["LOWER(IFNULL(name,'')) LIKE :pat"]
+    params: dict = {"pat": f"%{q.lower()}%", "limit": limit}
+    try:
+        did = int(q, 0)  # 16, 0x10, 0o20 — всё валидно
+        where.append("device_id = :did")
+        params["did"] = did
+    except ValueError:
+        pass
+    return conn.execute(f"""
+        SELECT * FROM devices
+        WHERE {" OR ".join(where)}
+        ORDER BY last_seen_at DESC
+        LIMIT :limit
+    """, params).fetchall()
 
 
 def ack_sos(conn: sqlite3.Connection, sos_id: int, acked_by: Optional[int]) -> Optional[sqlite3.Row]:
@@ -248,15 +342,36 @@ def get_new_sos(conn: sqlite3.Connection, since_id: int, limit: int = 100) -> Li
 # отправителя — фронт сразу получает "Вася (#16): привет" вместо
 # "device 16: привет".
 
-def list_chat(conn: sqlite3.Connection, limit: int = 100) -> List[sqlite3.Row]:
-    """Последние N сообщений в хронологическом порядке (старые → новые)."""
+def list_chat(
+    conn: sqlite3.Connection,
+    limit: int = 100,
+    device_id: Optional[int] = None,
+) -> List[sqlite3.Row]:
+    """Последние N сообщений в хронологическом порядке (старые → новые).
+
+    `device_id` фильтрует ленту до сообщений одного устройства И базы —
+    полезно для AI-вопроса «что писал турист 16»: видны и его реплики,
+    и ответы оператора в этом диалоге."""
+    if device_id is None:
+        return conn.execute("""
+            SELECT c.*, d.name AS device_name
+            FROM chat_messages c
+            LEFT JOIN devices d ON d.device_id = c.device_id
+            ORDER BY c.id DESC
+            LIMIT :limit
+        """, {"limit": limit}).fetchall()[::-1]
+    # device_id ИЛИ база (NODE_DEVICE_ID=1 по умолчанию). Захардкодить 1 здесь
+    # некрасиво, но передавать base_id в db-слой — оверкилл; реальный пользователь
+    # этого фильтра — AI-инструмент get_chat_history, ему нужна именно «ветка
+    # диалога с этим туристом», что включает ответы оператора.
     return conn.execute("""
         SELECT c.*, d.name AS device_name
         FROM chat_messages c
         LEFT JOIN devices d ON d.device_id = c.device_id
+        WHERE c.device_id = :did OR c.device_id = 1
         ORDER BY c.id DESC
         LIMIT :limit
-    """, {"limit": limit}).fetchall()[::-1]
+    """, {"limit": limit, "did": device_id}).fetchall()[::-1]
 
 
 # --- запись от базы (этап Б чата): сообщение оператора в эфир ---

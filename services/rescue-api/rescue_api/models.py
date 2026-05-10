@@ -143,6 +143,7 @@ class Ping(BaseModel):
 class Sos(BaseModel):
     id: int
     device_id: int
+    device_name: str
     received_at: str
     position: Position
     sos_type: int
@@ -158,9 +159,16 @@ class Sos(BaseModel):
     @classmethod
     def from_row(cls, row) -> "Sos":
         t = row["sos_type"]
+        # device_name берём из JOIN с devices (см. db.list_sos / db.get_sos).
+        # Если row без него (старый запрос без JOIN) — fallback в "".
+        try:
+            name = row["device_name"] or ""
+        except (KeyError, IndexError):
+            name = ""
         return cls(
             id=row["id"],
             device_id=row["device_id"],
+            device_name=name,
             received_at=row["received_at"],
             position=Position(lat=_coord(row["latitude"]),
                               lon=_coord(row["longitude"])),
@@ -224,12 +232,53 @@ class ChatMessage(BaseModel):
 # Stats / запросы
 # ============================================================
 
+class TopDevice(BaseModel):
+    device_id: int
+    name: str
+    pings: int
+
+
 class Stats(BaseModel):
     pings_total: int
     sos_total: int
     sos_open: int
+    sos_acked: int      # acked=1 AND resolved=0
+    sos_resolved: int   # resolved=1
     devices_total: int
     devices_online: int
+    pings_24h: int      # PING-ов за последние 24 часа
+    sos_24h: int        # SOS-ов за последние 24 часа
+    # Разбивка SOS по типам: {"падение": 2, "медицина": 1, ...}.
+    # Ключ — sos_type_label (стрингой), для AI это удобнее: видно
+    # сразу название типа, без таблицы id→label.
+    sos_by_type: dict[str, int]
+    # Топ-3 устройств по числу всех PING'ов в системе (всё время).
+    top_devices_by_pings: list[TopDevice]
+
+    @classmethod
+    def from_dict(cls, d: dict) -> "Stats":
+        # db.get_stats() отдаёт sos_by_type с числовыми ключами (sos_type),
+        # для AI читаемее sos_by_type_label. Переводим здесь, чтобы тип
+        # SOS_TYPE_LABELS оставался единственным источником истины (см. выше).
+        by_type_int = d.get("sos_by_type", {}) or {}
+        by_type_labeled: dict[str, int] = {}
+        for tid, cnt in by_type_int.items():
+            by_type_labeled[SOS_TYPE_LABELS.get(int(tid), f"тип {tid}")] = int(cnt)
+        return cls(
+            pings_total=d["pings_total"],
+            sos_total=d["sos_total"],
+            sos_open=d["sos_open"],
+            sos_acked=d.get("sos_acked", 0),
+            sos_resolved=d.get("sos_resolved", 0),
+            devices_total=d["devices_total"],
+            devices_online=d["devices_online"],
+            pings_24h=d.get("pings_24h", 0),
+            sos_24h=d.get("sos_24h", 0),
+            sos_by_type=by_type_labeled,
+            top_devices_by_pings=[
+                TopDevice(**t) for t in d.get("top_devices_by_pings", [])
+            ],
+        )
 
 
 class AckRequest(BaseModel):
