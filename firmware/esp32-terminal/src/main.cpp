@@ -36,20 +36,21 @@ using namespace httpsserver;
 // --- Настройки этого терминала ---------------------------------------------
 static const uint16_t DEVICE_ID        = 0x0010;           // ID туриста (база=0x0001, инфо-точка=0x0100, туристы=0x00xx)
 static const Channel  DEVICE_CHANNEL   = Channel::TOURIST; // канал
-static const uint32_t PING_INTERVAL_MS = 10000;            // раз в 10 сек
+static const uint32_t PING_INTERVAL_MS = 20000;            // раз в 20 сек (реже = меньше collision-окон)
 
 // SOS — параметры из CLAUDE.md
 static const uint8_t  SOS_REPEAT       = 3;     // 3 пакета подряд
 static const uint32_t SOS_INTERVAL_MS  = 500;   // интервал между ними
 
-// CHAT — повторяем 2 раза с интервалом 1.3 сек.
+// CHAT — повторяем 3 раза с интервалом ~2 сек.
 // Зачем: LoRa полу-дуплекс, два узла часто заходят в TX одновременно
 // (оператор и турист пишут друг другу) — collision, оба пакета теряются.
-// Повтор с разным от lora-station интервалом (там 1.0 сек) почти гарантирует
-// что хотя бы одна копия дойдёт. Дедуп на стороне приёмника по hash payload
-// уберёт лишнее (см. lora-station/mesh.py::DedupCache._key).
-static const uint8_t  CHAT_REPEAT      = 2;
-static const uint32_t CHAT_INTERVAL_MS = 1300;
+// 3 повтора с разным от lora-station интервалом плюс случайный pre-CAD
+// jitter в transmit_packet() дают высокий шанс что хотя бы одна копия
+// дойдёт. Дедуп на стороне приёмника по hash payload уберёт лишнее
+// (см. lora-station/mesh.py::DedupCache._key).
+static const uint8_t  CHAT_REPEAT      = 3;
+static const uint32_t CHAT_INTERVAL_MS = 2100;
 
 // Координаты-заглушка пока браузер не прислал GPS. (0, 0) = "координаты неизвестны".
 static const int32_t STUB_LAT_E6 = 0;
@@ -825,18 +826,26 @@ static void web_task(void* /*arg*/) {
 // Поэтому в конце восстанавливаем callback. Это то место, где у нас в
 // прошлой попытке RX «молча умирал».
 static bool wait_for_clear_channel() {
+    // Pre-CAD jitter: КРИТИЧЕСКИ ВАЖНО при синхронных нажатиях. Без него
+    // оба узла в момент T делают CAD одновременно, оба видят «свободно»,
+    // оба уходят в TX → collision, оба пакета теряются.
+    // 0-400 мс случайной задержки гарантирует что CAD у узлов разъезжается
+    // по времени: если один начнёт TX через 50 мс, второй сделает CAD на
+    // 250 мс и УВИДИТ преамбулу первого, отступит → пакет первого дойдёт.
+    delay(esp_random() % 400);
+
     const uint16_t CW_MS_MIN = 60;     // contention window нижняя граница
-    uint16_t cw_ms_max       = 200;    // верхняя граница, растёт при retry
+    uint16_t cw_ms_max       = 250;    // верхняя граница, растёт при retry
     bool was_clear = false;
     for (int i = 0; i < 5; i++) {
         int state = radio.scanChannel();
         if (state == RADIOLIB_CHANNEL_FREE) { was_clear = true; break; }
         // Канал занят — случайный backoff в текущем CW. Окно растёт
-        // экспоненциально (200/400/800/1500): уменьшает шанс что узлы
+        // экспоненциально (250/500/1000/2000): уменьшает шанс что узлы
         // снова попадут в один такт после ожидания.
         uint16_t span = cw_ms_max - CW_MS_MIN;
         delay(CW_MS_MIN + (esp_random() % span));
-        cw_ms_max = (cw_ms_max < 1500) ? cw_ms_max * 2 : 1500;
+        cw_ms_max = (cw_ms_max < 2000) ? cw_ms_max * 2 : 2000;
     }
     // Восстанавливаем RX-callback после CAD (см. комментарий выше).
     radio.setPacketReceivedAction(on_rx_done);

@@ -235,15 +235,19 @@ def main() -> int:
             # TX-очередь — отдаём один пакет за итерацию, чтобы не залипать.
             tx_raw = tx_q.pop(timeout=0)
             if tx_raw is not None:
-                # Listen-before-talk: дёшевая защита от collision'а с ESP32.
-                # Если оба узла начинают TX в один и тот же момент, ни один
-                # пакет не дойдёт. Здесь мы спрашиваем чип «есть ли кто-то
-                # сейчас в эфире» — если да, делаем случайный backoff и
-                # пробуем снова. До 4 попыток; если канал стабильно занят —
+                # Pre-LBT jitter: КРИТИЧЕСКИ ВАЖНО при синхронных событиях.
+                # Если оба узла одновременно вошли в LBT, оба видят «свободно»
+                # и оба уходят в TX → collision. 0-400 мс случайной задержки
+                # ПЕРЕД LBT — узлы расходятся, один начнёт TX раньше, второй
+                # увидит занятый эфир и отступит.
+                time.sleep(random.uniform(0.0, 0.4))
+
+                # Listen-before-talk: спрашиваем чип «есть ли кто-то сейчас
+                # в эфире». Если да — backoff и retry. До 4 попыток; после
                 # передаём всё равно (пакет важен, особенно для SOS).
                 lbt_attempts = 0
                 while lbt_attempts < 4 and radio.channel_busy(threshold_dbm=-100):
-                    backoff = random.uniform(0.1, 0.4)
+                    backoff = random.uniform(0.15, 0.6)
                     log.debug("[LBT] канал занят, backoff %.0f мс", backoff * 1000)
                     time.sleep(backoff)
                     lbt_attempts += 1

@@ -1,73 +1,29 @@
----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
-Verbose mode can be enabled via `-v, --verbose` option
-CONFIGURATION: https://docs.platformio.org/page/boards/espressif32/esp32-s3-devkitc-1.html
-PLATFORM: Espressif 32 (6.13.0) > Espressif ESP32-S3-DevKitC-1-N8 (8 MB QD, No PSRAM)
-HARDWARE: ESP32S3 240MHz, 320KB RAM, 8MB Flash
-DEBUG: Current (esp-builtin) On-board (esp-builtin) External (cmsis-dap, esp-bridge, esp-prog, iot-bus-jtag, jlink, minimodule, olimex-arm-usb-ocd, olimex-arm-usb-ocd-h, olimex-arm-usb-tiny-h, olimex-jtag-tiny, tumpa)
-PACKAGES: 
- - framework-arduinoespressif32 @ 3.20017.241212+sha.dcc1105b 
- - tool-esptoolpy @ 2.41100.0 (4.11.0) 
- - tool-mkfatfs @ 2.0.1 
- - tool-mklittlefs @ 1.203.210628 (2.3) 
- - tool-mkspiffs @ 2.230.0 (2.30) 
- - toolchain-riscv32-esp @ 8.4.0+2021r2-patch5 
- - toolchain-xtensa-esp32s3 @ 8.4.0+2021r2-patch5
-LDF: Library Dependency Finder -> https://bit.ly/configure-pio-ldf
-LDF Modes: Finder ~ chain, Compatibility ~ soft
-Found 36 compatible libraries
-Scanning dependencies...
-Dependency Graph
-|-- RadioLib @ 6.6.0
-|-- esp32_https_server @ 1.0.0
-|-- mesh_packet
-|-- SPI @ 2.0.0
-|-- WiFi @ 2.0.0
-Building in release mode
-Compiling .pio\build\esp32-s3-n16r8\src\main.cpp.o
-In file included from .pio/libdeps/esp32-s3-n16r8/esp32_https_server/src/HTTPSServer.hpp:11,
-                 from src/main.cpp:26:
-C:/Users/SABBA/.platformio/packages/framework-arduinoespressif32/tools/sdk/esp32s3/include/openssl/include/openssl/ssl.h:8:2: warning: #warning "OpenSSL component will be removed from ESP-IDF in v5.0, please use esp_tls instead" [-Wcpp]
- #warning "OpenSSL component will be removed from ESP-IDF in v5.0, please use esp_tls instead"
-  ^~~~~~~
-In file included from .pio/libdeps/esp32-s3-n16r8/esp32_https_server/src/ConnectionContext.hpp:8,
-                 from .pio/libdeps/esp32-s3-n16r8/esp32_https_server/src/HTTPRequest.hpp:10,
-                 from .pio/libdeps/esp32-s3-n16r8/esp32_https_server/src/HTTPSCallbackFunction.hpp:4,
-                 from .pio/libdeps/esp32-s3-n16r8/esp32_https_server/src/ResourceNode.hpp:7,
-                 from .pio/libdeps/esp32-s3-n16r8/esp32_https_server/src/HTTPServer.hpp:20,
-                 from .pio/libdeps/esp32-s3-n16r8/esp32_https_server/src/HTTPSServer.hpp:15,
-                 from src/main.cpp:26:
-C:/Users/SABBA/.platformio/packages/framework-arduinoespressif32/tools/sdk/esp32s3/include/openssl/include/openssl/ssl.h:8:2: warning: #warning "OpenSSL component will be removed from ESP-IDF in v5.0, please use esp_tls instead" [-Wcpp]
- #warning "OpenSSL component will be removed from ESP-IDF in v5.0, please use esp_tls instead"
-  ^~~~~~~
-In file included from .pio/libdeps/esp32-s3-n16r8/esp32_https_server/src/HTTPResponse.hpp:12,
-                 from .pio/libdeps/esp32-s3-n16r8/esp32_https_server/src/HTTPSCallbackFunction.hpp:5,
-                 from .pio/libdeps/esp32-s3-n16r8/esp32_https_server/src/ResourceNode.hpp:7,
-                 from .pio/libdeps/esp32-s3-n16r8/esp32_https_server/src/HTTPServer.hpp:20,
-                 from .pio/libdeps/esp32-s3-n16r8/esp32_https_server/src/HTTPSServer.hpp:15,
-                 from src/main.cpp:26:
-C:/Users/SABBA/.platformio/packages/framework-arduinoespressif32/tools/sdk/esp32s3/include/openssl/include/openssl/ssl.h:8:2: warning: #warning "OpenSSL component will be removed from ESP-IDF in v5.0, please use esp_tls instead" [-Wcpp]
- #warning "OpenSSL component will be removed from ESP-IDF in v5.0, please use esp_tls instead"
-  ^~~~~~~
-In file included from .pio/libdeps/esp32-s3-n16r8/esp32_https_server/src/HTTPSConnection.hpp:9,
-                 from .pio/libdeps/esp32-s3-n16r8/esp32_https_server/src/HTTPSServer.hpp:22,
-                 from src/main.cpp:26:
-C:/Users/SABBA/.platformio/packages/framework-arduinoespressif32/tools/sdk/esp32s3/include/openssl/include/openssl/ssl.h:8:2: warning: #warning "OpenSSL component will be removed from ESP-IDF in v5.0, please use esp_tls instead" [-Wcpp]
- #warning "OpenSSL component will be removed from ESP-IDF in v5.0, please use esp_tls instead"
-  ^~~~~~~
-src/main.cpp: In function 'void handle_inbox(httpsserver::HTTPRequest*, httpsserver::HTTPResponse*)':
-src/main.cpp:607:64: error: no matching function for call to 'httpsserver::ResourceParameters::getQueryParameter(const char [6])'
-     std::string s = req->getParams()->getQueryParameter("since");
-                                                                ^
-In file included from .pio/libdeps/esp32-s3-n16r8/esp32_https_server/src/HTTPRequest.hpp:14,
-                 from .pio/libdeps/esp32-s3-n16r8/esp32_https_server/src/HTTPSCallbackFunction.hpp:4,
-                 from .pio/libdeps/esp32-s3-n16r8/esp32_https_server/src/ResourceNode.hpp:7,
-                 from .pio/libdeps/esp32-s3-n16r8/esp32_https_server/src/HTTPServer.hpp:20,
-                 from .pio/libdeps/esp32-s3-n16r8/esp32_https_server/src/HTTPSServer.hpp:15,
-                 from src/main.cpp:26:
-.pio/libdeps/esp32-s3-n16r8/esp32_https_server/src/ResourceParameters.hpp:37:8: note: candidate: 'bool httpsserver::ResourceParameters::getQueryParameter(const string&, std::__cxx11::string&)'
-   bool getQueryParameter(std::string const &name, std::string &value);
-        ^~~~~~~~~~~~~~~~~
-.pio/libdeps/esp32-s3-n16r8/esp32_https_server/src/ResourceParameters.hpp:37:8: note:   candidate expects 2 arguments, 1 provided
-*** [.pio\build\esp32-s3-n16r8\src\main.cpp.o] Error 1
-=============================================================================================== [FAILED] Took 10.53 seconds ===============================================================================================
-PS C:\git\Mesh-net тропы\firmware\esp32-terminal> 
+May 10 22:43:01 meshnet systemd[1]: mesh-lora-station.service: Deactivated successfully.
+May 10 22:43:01 meshnet systemd[1]: Stopped mesh-lora-station.service - Mesh-net Тропы — LoRa station (RX/TX/dispatch on RPi5).
+May 10 22:43:01 meshnet systemd[1]: mesh-lora-station.service: Consumed 9.528s CPU time.
+May 10 22:43:01 meshnet systemd[1]: Started mesh-lora-station.service - Mesh-net Тропы — LoRa station (RX/TX/dispatch on RPi5).
+May 10 22:43:01 meshnet python[9940]: 22:43:01 INFO    lora_station: === lora-station запуск, node_id=0x0001 ===
+May 10 22:43:01 meshnet python[9940]: 22:43:01 INFO    lora_station: БД: /var/lib/mesh-net/mesh.db
+May 10 22:43:01 meshnet python[9940]: 22:43:01 INFO    lora_station: Пины: CS=8 RESET=22 DIO1=23 BUSY=24
+May 10 22:43:01 meshnet python[9940]: 22:43:01 INFO    lora_station: SX1262 init OK — 868.0 МГц, SF10, BW125, CR4/5, 14 дБм
+May 10 22:43:01 meshnet python[9940]: 22:43:01 INFO    lora_station: [init-diag] chip_mode=5 cmd_st=1 device_errors=0x0000
+May 10 22:43:01 meshnet python[9940]: 22:43:01 INFO    lora_station: RX запущен, слушаем эфир (Ctrl-C для выхода)
+May 10 22:43:06 meshnet python[9940]: 22:43:06 INFO    lora_station: [RX#1] PING dev=16 ttl=3 ch=0 lat=0 lon=0  RSSI=-41 дБм SNR=8 дБ
+May 10 22:43:06 meshnet python[9940]: 22:43:06 INFO    lora_station: [TX] ретрансляция, 64 байт
+May 10 22:43:15 meshnet python[9940]: 22:43:15 INFO    lora_station: [RX#2] PING dev=16 ttl=3 ch=0 lat=44096940 lon=39095175  RSSI=-36 дБм SNR=9 дБ
+May 10 22:43:15 meshnet python[9940]: 22:43:15 INFO    lora_station: [TX] ретрансляция, 64 байт
+May 10 22:43:22 meshnet python[9940]: 22:43:22 INFO    lora_station: [OUTBOX] CHAT id=5 → TxQueue (msg='333')
+May 10 22:43:23 meshnet python[9940]: 22:43:23 INFO    lora_station: [LBT] 3 попыток, канал освободился
+May 10 22:43:23 meshnet python[9940]: 22:43:23 INFO    lora_station: [TX] ретрансляция, 64 байт
+May 10 22:43:24 meshnet python[9940]: 22:43:24 INFO    lora_station: [OUTBOX] CHAT id=6 → TxQueue (msg='333')
+May 10 22:43:24 meshnet python[9940]: 22:43:24 INFO    lora_station: [LBT] 3 попыток, канал освободился
+May 10 22:43:24 meshnet python[9940]: 22:43:24 INFO    lora_station: [TX] ретрансляция, 64 байт
+May 10 22:43:26 meshnet python[9940]: 22:43:26 INFO    lora_station: [RX#3] PING dev=16 ttl=3 ch=0 lat=44096940 lon=39095175  RSSI=-36 дБм SNR=8 дБ
+May 10 22:43:26 meshnet python[9940]: 22:43:26 INFO    lora_station: [TX] ретрансляция, 64 байт
+May 10 22:43:34 meshnet python[9940]: 22:43:34 INFO    lora_station: [RX#4] PING dev=16 ttl=3 ch=0 lat=44096940 lon=39095175  RSSI=-37 дБм SNR=8 дБ
+May 10 22:43:34 meshnet python[9940]: 22:43:34 INFO    lora_station: [TX] ретрансляция, 64 байт
+May 10 22:43:42 meshnet python[9940]: 22:43:42 INFO    lora_station: [RX#5] PING dev=16 ttl=3 ch=0 lat=44096940 lon=39095175  RSSI=-36 дБм SNR=8 дБ
+May 10 22:43:42 meshnet python[9940]: 22:43:42 INFO    lora_station: [TX] ретрансляция, 64 байт
+May 10 22:43:51 meshnet python[9940]: 22:43:51 INFO    lora_station: [RX#6] PING dev=16 ttl=3 ch=0 lat=44096940 lon=39095175  RSSI=-37 дБм SNR=9 дБ
+May 10 22:43:51 meshnet python[9940]: 22:43:51 INFO    lora_station: [TX] ретрансляция, 64 байт
+^C

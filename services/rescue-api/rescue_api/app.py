@@ -226,11 +226,17 @@ def messages_send(body: models.ChatSendRequest):
     with db.db_write(DB_PATH) as conn:
         db.ensure_base_device(conn, BASE_DEVICE_ID, BASE_DEVICE_NAME)
         chat_id = db.insert_base_chat(conn, BASE_DEVICE_ID, text)
-        # Кладём в outgoing_chat ДВЕ копии. lora-station пуллит outbox каждую
-        # секунду — между передачами выйдет ~1 сек. Зачем: LoRa полу-дуплекс,
-        # если ESP32 в этот момент сам передаёт (PING/CHAT/SOS) — он наш
-        # пакет не услышит. Один повтор закрывает 99% таких коллизий.
+        # Кладём в outgoing_chat 3 копии. lora-station пуллит outbox раз в сек,
+        # плюс pre-LBT jitter (0-400 мс) и CSMA backoff'ы — между копиями
+        # реальный разнос 1-2 сек. Зачем 3 копии:
+        # LoRa полу-дуплекс. При синхронных нажатиях оператора и туриста оба
+        # узла стартуют TX почти одновременно — collision. Pre-CAD jitter +
+        # CSMA расходят их по времени, но не на 100%. 3 повтора с разными
+        # интервалами почти гарантируют что хотя бы одна копия дойдёт даже
+        # при пиковой нагрузке (например, оператор шлёт ответ сразу как
+        # пришёл SOS-бёрст в эфире).
         # Дедуп на стороне ESP32 (hash payload + 30 сек) уберёт лишнее.
+        db.insert_outgoing_chat(conn, text, chat_message_id=chat_id)
         db.insert_outgoing_chat(conn, text, chat_message_id=chat_id)
         db.insert_outgoing_chat(conn, text, chat_message_id=chat_id)
         # Подтянем готовую строку обратно — заодно проверим, что JOIN на
@@ -241,7 +247,7 @@ def messages_send(body: models.ChatSendRequest):
             LEFT JOIN devices d ON d.device_id = c.device_id
             WHERE c.id = ?
         """, (chat_id,)).fetchone()
-    log.info("CHAT base→tourists: id=%d %r (×2 retransmit)", chat_id, text[:32])
+    log.info("CHAT base→tourists: id=%d %r (×3 retransmit)", chat_id, text[:32])
     return models.ChatMessage.from_row(row)
 
 
