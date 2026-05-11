@@ -321,9 +321,9 @@ sudo journalctl -u mesh-rescue-api -n 200 --no-pager
 Файлы: `services/gigachat-agent/`, правки в `web/rescue-dashboard/` и `services/rescue-api/`
 - ✅ FastAPI-сервис на 127.0.0.1:8001 на той же RPi5 (наружу не светится)
 - ✅ Auth: SDK `gigachat` 0.2.0 с Authorization key из `token-key` — токен обновляется автоматически
-- ✅ Function calling: 4 инструмента (`get_active_tourists`, `get_sos_events`, `get_device_track`, `get_stats`) — все через HTTP к rescue-api
+- ✅ Function calling: 8 инструментов — `get_active_tourists`, `get_all_devices`, `get_sos_events` (с фильтрами `only_open` / `device_id` / `hours` / `sos_type`), `get_sos_details`, `get_device_track`, `get_chat_history`, `find_device`, `get_stats` (расширенный: 24ч, разбивка по типам, топ-3 по pings) — все через HTTP к rescue-api
 - ✅ Прокси `POST /api/chat` в rescue-api — дашборд ходит через single-origin без CORS
-- ✅ Чат-панель в дашборде: пузыри user/assistant, индикатор «AI думает…», кнопка очистки, история в памяти страницы
+- ✅ Чат-панель в дашборде: пузыри user/assistant, индикатор «AI думает…», история сохраняется в `localStorage` (F5 не стирает переписку), кнопка ✕ с `confirm()` чистит и память, и localStorage
 - ✅ Обработка ошибок: модель/сеть/rescue-api/таймаут — всё возвращается как `error` в ответе с человекочитаемой причиной, дашборд красит красным
 - ✅ systemd-юнит `mesh-gigachat-agent.service` (After mesh-rescue-api)
 
@@ -367,7 +367,7 @@ sudo journalctl -u mesh-rescue-api -n 200 --no-pager
 | `web/rescue-dashboard/` | ✅ Vanilla HTML/JS + Leaflet, маркеры/SOS/WS-reconnect — работает на железе |
 | `scripts/import_tiles/download_tiles.py` | ✅ Стандартный stdlib, идемпотентный, rate-limit 1 req/сек |
 | systemd: `mesh-lora-station`, `mesh-rescue-api`, `mesh-gigachat-agent` | ✅ Шаблоны + `scripts/systemd/install.sh` (autostart на RPi5) |
-| `services/gigachat-agent/` + чат-панель в дашборде | ✅ GigaChat function calling (4 инструмента), прокси `/api/chat`, UI |
+| `services/gigachat-agent/` + чат-панель в дашборде | ✅ GigaChat function calling (8 инструментов), прокси `/api/chat`, UI с историей в localStorage |
 | Чат турист↔база (CHAT-пакеты, inbox, outgoing_chat, CSMA/LBT) | ✅ Двусторонний (этап 4.5), есть известное ограничение при синхронной TX — см. ниже |
 | Усиление декодера (sanity-проверки полей) | ✅ Отсекает мусор со случайным CRC-совпадением |
 | Очистка БД через UI (purge) | ✅ Чекбоксы в дашборде, эндпоинт `POST /api/admin/purge` |
@@ -386,43 +386,68 @@ sudo journalctl -u mesh-rescue-api -n 200 --no-pager
 
 ---
 
+## ACK-протокол v2 (гарантированная доставка)
+
+С v2 пакет 82 байта (было 64), payload 64 (было 48), добавлены:
+- `packet_id` (uint16) — монотонный счётчик исходящих на каждом узле
+- `flags` (uint8) — `WANT_ACK`, `IS_ACK`, channel переехал в биты 2-3
+  (поэтому отдельного байта `channel` больше нет — экономия)
+
+**Логика:** CHAT и SOS шлются с `want_ack=1`. Конечный получатель (база)
+после обработки шлёт ACK-пакет с `is_ack=1` и `ack_for_packet_id` в
+payload. Отправитель ловит ACK → снимает запись из pending. Если ACK
+не пришёл за `ACK_TIMEOUT` (4 сек по умолчанию) — retry с тем же
+`packet_id` (приёмник дедупит). До `MAX_RETRIES=3`, итого 4 попытки.
+
+**Что заменило старое:**
+- ESP32 раньше слал CHAT 3 копии бёрстом → теперь 1 копию + retry по таймауту
+- rescue-api писал в `outgoing_chat` 3 копии → теперь 1, lora-station сам ретраит
+- Дедуп на приёмнике по `hash(payload)` остался — нужен на retry-копии при
+  потерянном ACK
+
+**Где смотреть код:**
+- `proto/messages.proto` — формат
+- `firmware/esp32-terminal/lib/mesh_packet/MeshPacket.{h,cpp}` — C++ кодек
+- `services/lora-station/lora_station/packet.py` — Python кодек (есть `__main__` self-test)
+- `firmware/esp32-terminal/src/main.cpp` — `g_pending[PENDING_SIZE]`,
+  `pending_alloc`/`pending_release`, `check_pending_retries`, `send_ack`
+- `services/lora-station/lora_station/dispatcher.py` — `_send_ack`, обработка `is_ack`
+- `services/lora-station/lora_station/__main__.py` — outbox-poller с retry/fail
+- `services/rescue-api/rescue_api/ws.py` — push `event: chat_status`
+  при изменении `delivery_status`
+- `web/rescue-dashboard/app.js` — `updateTourMsgStatus`, значки ⏳/✅/❌
+
+**Параметры retry — синхронны между узлами:**
+- ESP32 (`main.cpp`): `ACK_TIMEOUT_MS=4000`, `MAX_RETRIES=3`,
+  расписание 4s → 6s → 9s → 13.5s
+- lora-station (`__main__.py`): те же значения
+
+Если меняешь — поправь в обоих местах, иначе одна сторона признает CHAT
+failed раньше другой.
+
+---
+
 ## Известные ограничения
 
-### Collision при синхронной отправке CHAT с обеих сторон
+### Collision при синхронной отправке CHAT с обеих сторон ✅ РЕШЕНО (v2)
 
-**Симптом:** оператор и турист одновременно нажимают «отправить» (разница
-≤ 200 мс) — сообщения теряются, ни одно из двух не доходит. При обычной
-очерёдности (один пишет → другой ждёт ответа → пишет в ответ) всё работает.
+С введением ACK-протокола (см. раздел выше) синхронные нажатия больше не
+теряют сообщения навсегда: при collision первая копия пропадает, retry
+через 4 сек идёт в другое временное окно — пакет долетает. Видим в логах
+`[CHAT] ⟳ retry pkt=N` и потом `[ACK] ✓ pkt=N`.
 
-**Почему так:** LoRa полу-дуплекс. Чип SX1262 в момент TX физически не может
-принимать — приёмная цепь отключена. Если оба узла начинают TX в одно и то же
-время, они «глохнут» друг для друга на ~700 мс длительности пакета — оба
-выходят из TX в RX к моменту, когда в эфире уже тишина. Это фундаментальная
-особенность класса half-duplex радио, а не баг в нашем коде.
+Что осталось из v1 как mitigation (всё ещё полезно, чтобы retry
+понадобился реже):
+- **CAD перед TX** на ESP32 (`radio.scanChannel()`) и мгновенный **RSSI**
+  на lora-station — отступаем, если кто-то уже передаёт.
+- **Pre-CAD jitter** 0–400 мс случайной задержки **до** CAD — узлы не
+  входят в проверку синхронно.
+- **Экспоненциальный backoff** при «занято»: contention window 250→2000 мс.
 
-Что мы уже делаем для смягчения (Meshtastic-стиль CSMA/CA):
-- **CAD перед TX** на ESP32 (`radio.scanChannel()`) и **мгновенный RSSI** на
-  lora-station — узел проверяет эфир и отступает, если кто-то уже передаёт.
-- **Pre-CAD/pre-LBT jitter** 0–400 мс случайной задержки **до** CAD —
-  чтобы оба узла не вошли в проверку синхронно (без этого оба видят «свободно»
-  и оба уходят в TX).
-- **Экспоненциальный backoff** при «занято»: contention window растёт
-  250→500→1000→2000 мс, до 5 попыток. Случайная задержка в текущем CW.
-- **Retransmit ×3**: ESP32 шлёт CHAT 3 копии с интервалом ~2.1 сек,
-  rescue-api пишет 3 копии в `outgoing_chat` (lora-station выгребает по 1
-  в секунду). Дедуп по hash(payload) в окне 30 сек уберёт лишнее на приёме.
+Дедуп `hash(payload)` в окне 30 сек по-прежнему нужен — на retry-копию
+после потерянного ACK не должен задвоиться `chat_messages` в БД.
 
-Что **не** реализовано и могло бы помочь дальше:
-- **ACK + retry-по-таймауту**. Сейчас отправитель не знает, дошло сообщение
-  или нет — у нас fire-and-forget. Если бы был ACK, отправитель повторял бы
-  пока не получит подтверждение, на любом окне тишины. Это значительная
-  переделка протокола (ACK-пакет с reference на packet ID, таймер на
-  отправляющей стороне, retry-счётчик).
-- Поскольку реальный рабочий сценарий — «оператор спрашивает → турист
-  отвечает», и при таком профиле проблемы нет, ACK откладывается до полевых
-  испытаний. Если на практике мешает — добавляем.
-
-**Тестировать стоит:** чтобы изменение реальной частоты пользования сети
-(особенно при добавлении инфо-точки и второго туриста) не превратило это в
-блокер. Если ESP32 выходит в TX (PING) каждые 20 сек, статистически окно
-коллизий ~7% — допустимо. Если 5+ устройств начнут спорить за эфир — нет.
+**Что осталось как минус half-duplex:** SOS-бёрст (3 копии × 500 мс) не
+имеет retry — он по-прежнему «параноидальный режим». Каждая SOS-копия
+имеет свой `packet_id` и шлёт ACK; если хотя бы одна из 3 копий и одного
+ACK дойдёт — SOS считается полученным оператором (через дашборд).

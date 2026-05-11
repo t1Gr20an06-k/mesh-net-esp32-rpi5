@@ -148,6 +148,10 @@ def make_forward(pkt: MeshPacket) -> Optional[MeshPacket]:
     """
     Подготовить пакет к ретрансляции: TTL−1, и если стало 0 — не ретранслируем.
     Возвращает новый MeshPacket или None.
+
+    Важно: packet_id, want_ack, is_ack сохраняются — иначе ACK через инфо-точку
+    не сматчится у получателя, а want_ack потеряется и конечный узел не
+    отправит подтверждение.
     """
     if pkt.ttl <= 1:
         return None
@@ -155,9 +159,12 @@ def make_forward(pkt: MeshPacket) -> Optional[MeshPacket]:
         version=pkt.version,
         type=pkt.type,
         device_id=pkt.device_id,
+        packet_id=pkt.packet_id,
         channel=pkt.channel,
         ttl=pkt.ttl - 1,
         latitude=pkt.latitude,
         longitude=pkt.longitude,
         payload=pkt.payload,
+        want_ack=pkt.want_ack,
+        is_ack=pkt.is_ack,
     )

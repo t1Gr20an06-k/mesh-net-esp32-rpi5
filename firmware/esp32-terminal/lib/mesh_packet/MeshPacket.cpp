@@ -18,81 +18,97 @@ uint16_t MeshCodec::crc16_ccitt(const uint8_t* data, uint16_t len) {
     return crc;
 }
 
+static uint8_t build_flags(const MeshPacket& pkt) {
+    uint8_t f = 0;
+    if (pkt.want_ack) f |= FLAG_WANT_ACK;
+    if (pkt.is_ack)   f |= FLAG_IS_ACK;
+    f |= (((uint8_t)pkt.channel & 0x03) << FLAG_CHANNEL_SHIFT) & FLAG_CHANNEL_MASK;
+    return f;
+}
+
 // --- Encode ---
+// Layout см. в MeshPacket.h и proto/messages.proto.
 
 void MeshCodec::encode(const MeshPacket& pkt, uint8_t out[MESH_PACKET_SIZE]) {
     memset(out, 0, MESH_PACKET_SIZE);
 
     out[0] = pkt.version;
     out[1] = (uint8_t)pkt.type;
+    out[2] = build_flags(pkt);
+    out[3] = pkt.ttl;
 
     // device_id big-endian
-    out[2] = (pkt.device_id >> 8) & 0xFF;
-    out[3] =  pkt.device_id       & 0xFF;
+    out[4] = (pkt.device_id >> 8) & 0xFF;
+    out[5] =  pkt.device_id       & 0xFF;
 
-    out[4] = (uint8_t)pkt.channel;
-    out[5] = pkt.ttl;
+    // packet_id big-endian
+    out[6] = (pkt.packet_id >> 8) & 0xFF;
+    out[7] =  pkt.packet_id       & 0xFF;
 
     // latitude big-endian int32
-    out[6]  = (pkt.latitude >> 24) & 0xFF;
-    out[7]  = (pkt.latitude >> 16) & 0xFF;
-    out[8]  = (pkt.latitude >>  8) & 0xFF;
-    out[9]  =  pkt.latitude        & 0xFF;
+    out[8]  = (pkt.latitude >> 24) & 0xFF;
+    out[9]  = (pkt.latitude >> 16) & 0xFF;
+    out[10] = (pkt.latitude >>  8) & 0xFF;
+    out[11] =  pkt.latitude        & 0xFF;
 
     // longitude big-endian int32
-    out[10] = (pkt.longitude >> 24) & 0xFF;
-    out[11] = (pkt.longitude >> 16) & 0xFF;
-    out[12] = (pkt.longitude >>  8) & 0xFF;
-    out[13] =  pkt.longitude        & 0xFF;
+    out[12] = (pkt.longitude >> 24) & 0xFF;
+    out[13] = (pkt.longitude >> 16) & 0xFF;
+    out[14] = (pkt.longitude >>  8) & 0xFF;
+    out[15] =  pkt.longitude        & 0xFF;
 
-    // payload
-    memcpy(&out[14], pkt.payload, MESH_PAYLOAD_SIZE);
+    // payload (64 байта)
+    memcpy(&out[16], pkt.payload, MESH_PAYLOAD_SIZE);
 
-    // CRC от первых 62 байт
-    uint16_t crc = crc16_ccitt(out, 62);
-    out[62] = (crc >> 8) & 0xFF;
-    out[63] =  crc       & 0xFF;
+    // CRC от первых 80 байт
+    uint16_t crc = crc16_ccitt(out, 80);
+    out[80] = (crc >> 8) & 0xFF;
+    out[81] =  crc       & 0xFF;
 }
 
 // --- Decode ---
 
 bool MeshCodec::decode(const uint8_t in[MESH_PACKET_SIZE], MeshPacket& out) {
     // Проверяем CRC
-    uint16_t crc_calc = crc16_ccitt(in, 62);
-    uint16_t crc_recv = ((uint16_t)in[62] << 8) | in[63];
+    uint16_t crc_calc = crc16_ccitt(in, 80);
+    uint16_t crc_recv = ((uint16_t)in[80] << 8) | in[81];
     if (crc_calc != crc_recv) {
         return false;
     }
 
     // Sanity-проверка полей: LoRa-CRC + наш CRC-16 — это всё ещё ~1/65536
-    // шанс совпадения на шуме. Без валидации в нашу сеть пролезет «фантом».
+    // шанс совпадения на шуме. Без валидации в нашу сеть пролезает «фантом».
     uint8_t v   = in[0];
     uint8_t t   = in[1];
-    uint8_t ch  = in[4];
-    uint8_t ttl = in[5];
+    uint8_t fl  = in[2];
+    uint8_t ttl = in[3];
     if (v != MESH_PROTO_VERSION) return false;
     if (t > (uint8_t)PacketType::ACK) return false;        // 0..3
-    if (ch > (uint8_t)Channel::RESCUE) return false;       // 0..1
+    uint8_t ch_val = (fl & FLAG_CHANNEL_MASK) >> FLAG_CHANNEL_SHIFT;
+    if (ch_val > (uint8_t)Channel::RESCUE) return false;   // 0..1
     if (ttl == 0 || ttl > 8) return false;                 // дефолт 3, запас x2
 
     out.version   = v;
     out.type      = (PacketType)t;
-    out.device_id = ((uint16_t)in[2] << 8) | in[3];
-    out.channel   = (Channel)ch;
     out.ttl       = ttl;
+    out.device_id = ((uint16_t)in[4] << 8) | in[5];
+    out.packet_id = ((uint16_t)in[6] << 8) | in[7];
+    out.channel   = (Channel)ch_val;
+    out.want_ack  = (fl & FLAG_WANT_ACK) != 0;
+    out.is_ack    = (fl & FLAG_IS_ACK)   != 0;
 
-    // latitude — восстанавливаем знак через union-трюк (int32 из 4 байт BE)
-    out.latitude  = ((int32_t)(int8_t)in[6] << 24)
-                  | ((int32_t)in[7] << 16)
-                  | ((int32_t)in[8] <<  8)
-                  |  (int32_t)in[9];
+    // latitude — восстанавливаем знак через каст int8_t на старший байт
+    out.latitude  = ((int32_t)(int8_t)in[8]  << 24)
+                  | ((int32_t)in[9]  << 16)
+                  | ((int32_t)in[10] <<  8)
+                  |  (int32_t)in[11];
 
-    out.longitude = ((int32_t)(int8_t)in[10] << 24)
-                  | ((int32_t)in[11] << 16)
-                  | ((int32_t)in[12] <<  8)
-                  |  (int32_t)in[13];
+    out.longitude = ((int32_t)(int8_t)in[12] << 24)
+                  | ((int32_t)in[13] << 16)
+                  | ((int32_t)in[14] <<  8)
+                  |  (int32_t)in[15];
 
-    memcpy(out.payload, &in[14], MESH_PAYLOAD_SIZE);
+    memcpy(out.payload, &in[16], MESH_PAYLOAD_SIZE);
     out.crc16 = crc_recv;
 
     return true;
@@ -113,7 +129,6 @@ void make_ping_payload(uint8_t out[MESH_PAYLOAD_SIZE],
 
 void make_chat_payload(uint8_t out[MESH_PAYLOAD_SIZE], const char* text) {
     memset(out, 0, MESH_PAYLOAD_SIZE);
-    // strncpy без null-terminator (весь буфер под текст)
     size_t len = strlen(text);
     if (len > MESH_PAYLOAD_SIZE) len = MESH_PAYLOAD_SIZE;
     memcpy(out, text, len);
@@ -129,8 +144,19 @@ void make_sos_payload(uint8_t out[MESH_PAYLOAD_SIZE],
     memcpy(&out[1], message, len);
 }
 
-void make_ack_payload(uint8_t out[MESH_PAYLOAD_SIZE], uint16_t ack_device_id) {
+void make_ack_payload(uint8_t out[MESH_PAYLOAD_SIZE],
+                      uint16_t ack_for_device_id,
+                      uint16_t ack_for_packet_id) {
     memset(out, 0, MESH_PAYLOAD_SIZE);
-    out[0] = (ack_device_id >> 8) & 0xFF;
-    out[1] =  ack_device_id       & 0xFF;
+    out[0] = (ack_for_device_id >> 8) & 0xFF;
+    out[1] =  ack_for_device_id       & 0xFF;
+    out[2] = (ack_for_packet_id >> 8) & 0xFF;
+    out[3] =  ack_for_packet_id       & 0xFF;
+}
+
+void parse_ack_payload(const uint8_t in[MESH_PAYLOAD_SIZE],
+                       uint16_t& ack_for_device_id,
+                       uint16_t& ack_for_packet_id) {
+    ack_for_device_id = ((uint16_t)in[0] << 8) | in[1];
+    ack_for_packet_id = ((uint16_t)in[2] << 8) | in[3];
 }

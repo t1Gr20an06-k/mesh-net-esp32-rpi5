@@ -229,6 +229,7 @@ function tourMsgBubble(m) {
     const name = m.device_name || (isBase ? 'База' : `Device ${m.device_id}`);
     const div = document.createElement('div');
     div.className = isBase ? 'tour-msg from-base' : 'tour-msg';
+    div.dataset.id = m.id;     // нужен для WS event 'chat_status' (обновление значка доставки)
     const who = document.createElement('div');
     who.className = 'who';
     who.textContent = isBase ? `🛟 ${name}` : `${name} · #${m.device_id}`;
@@ -236,9 +237,35 @@ function tourMsgBubble(m) {
     body.textContent = m.message;
     const when = document.createElement('div');
     when.className = 'when';
-    when.textContent = fmtTime(m.received_at);
+    // Для сообщений базы добавляем значок доставки (см. updateTourMsgStatus).
+    // Туристов это не касается — у них delivery_status всегда null.
+    if (isBase) {
+        const status = document.createElement('span');
+        status.className = 'status';
+        status.textContent = ' ' + (DELIVERY_ICON[m.delivery_status] || DELIVERY_ICON.pending);
+        when.append(fmtTime(m.received_at));
+        when.appendChild(status);
+    } else {
+        when.textContent = fmtTime(m.received_at);
+    }
     div.append(who, body, when);
     return div;
+}
+
+// WS event 'chat_status' прилетает когда lora-station обновляет
+// delivery_status (ACK получен / retry исчерпан). Найдём пузырь по id и
+// обновим значок. Если такого пузыря нет (старый, или ESP32→база) — игнорим.
+function updateTourMsgStatus(id, status) {
+    const log = $('#tour-chat-log');
+    const div = log.querySelector(`.tour-msg[data-id="${id}"]`);
+    if (!div) return;
+    const statusEl = div.querySelector('.when .status');
+    if (statusEl) {
+        statusEl.textContent = ' ' + (DELIVERY_ICON[status] || '');
+    }
+    // Синхронизируем кеш для случая refreshTourChat() заново после purge
+    const cached = tourMessagesCache.find(m => m.id === id);
+    if (cached) cached.delivery_status = status;
 }
 
 function appendTourMessage(m) {
@@ -330,6 +357,11 @@ function connectWS() {
         } else if (msg.event === 'chat') {
             // У сообщений нет агрегации — просто дописываем в DOM по одному.
             appendTourMessage(msg.data);
+        } else if (msg.event === 'chat_status') {
+            // ACK-протокол v2: обновился delivery_status сообщения базы.
+            // Серверный broadcaster пушит это когда lora-station переводит
+            // pending → sent → acked / failed.
+            updateTourMsgStatus(msg.data.id, msg.data.delivery_status);
         }
     };
 }
@@ -491,7 +523,16 @@ const TABLE_LABELS = {
 // пишет в chat_messages (WS event 'chat' дашборду) и в outgoing_chat (lora-
 // station выгребает и шлёт в эфир). Сообщение появится в ленте через ~1 сек
 // само через WS — мы здесь только очищаем поле.
-const TOUR_CHAT_MAX_BYTES = 48;
+// Лимит 64 байта UTF-8 — это размер CHAT-payload в LoRa-пакете v2 (с v1 был 48).
+const TOUR_CHAT_MAX_BYTES = 64;
+
+// Значок доставки для сообщений от базы. Туристы шлют без статуса (null).
+const DELIVERY_ICON = {
+    pending: '⏳',
+    sent:    '⏳',
+    acked:   '✅',
+    failed:  '❌',
+};
 
 function initTourChat() {
     const form  = $('#tour-chat-form');

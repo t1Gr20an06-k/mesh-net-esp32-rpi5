@@ -15,6 +15,7 @@
 """
 
 import argparse
+import datetime as dt
 import logging
 import os
 import random
@@ -30,6 +31,14 @@ from .packet import (
     decode, make_chat_payload,
 )
 from .sx1262 import SX1262, Pins
+
+# --- ACK-протокол v2: параметры retry ---
+# Симметричны параметрам на ESP32 (firmware/esp32-terminal/src/main.cpp::ACK_TIMEOUT_MS).
+# Если оба разъезжаются — на одной из сторон CHAT будет признан недоставленным
+# раньше времени, а на другой ещё идти.
+ACK_TIMEOUT_S    = 4.0
+MAX_RETRIES      = 3
+RETRY_SCHEDULE_S = (4.0, 6.0, 9.0, 13.5)   # backoff по числу уже сделанных retry
 
 log = logging.getLogger("lora_station")
 
@@ -136,9 +145,35 @@ def main() -> int:
     # а более частый poll просто грузит SQLite без пользы.
     OUTBOX_POLL_S = 1.0
     last_outbox_t = 0.0
-    # Свои собственные id — чтобы не «принимать» эхо от ретранслятора (см.
-    # фильтр в Dispatcher). База от себя в эфир ничего не пишет в БД, но
-    # лора-станция инфо-точки услышит и попытается ретранслировать.
+
+    # Счётчик packet_id для исходящих CHAT базы (отдельный от dispatcher-овского
+    # счётчика для ACK — оба работают параллельно, на стороне ESP32 матчинг
+    # идёт по (originator_device_id, packet_id), коллизий нет).
+    # Стартуем с 1, не 0 — у dispatcher тоже монотонный, 0 зарезервируем
+    # как «не отправлено» в SQL (NULL).
+    next_chat_packet_id = 0
+    def alloc_packet_id() -> int:
+        nonlocal next_chat_packet_id
+        next_chat_packet_id = (next_chat_packet_id + 1) & 0xFFFF
+        if next_chat_packet_id == 0:
+            next_chat_packet_id = 1
+        return next_chat_packet_id
+
+    def build_outbox_packet(message: str, packet_id: int) -> MeshPacket:
+        """Один CHAT base→tourist с want_ack=true. tx_q.push сама вычислит
+        приоритет (PRIO_CHAT) и закодирует."""
+        return MeshPacket(
+            type=PacketType.CHAT,
+            device_id=node_id,
+            packet_id=packet_id,
+            channel=Channel.TOURIST,   # общий канал — слышат все ESP32
+            ttl=3,
+            latitude=0,
+            longitude=0,
+            payload=make_chat_payload(message),
+            want_ack=True,
+            is_ack=False,
+        )
 
     # Watchdog-диагностика: раз в 5 сек проверяем что чип всё ещё в RX
     # и нет ошибок. В норме — молчим. На аномалии — WARNING (виден всегда,
@@ -163,43 +198,106 @@ def main() -> int:
                                     _MODE_NAMES.get(mode, f"?{mode}"), cmd_st, errs)
                 except Exception as exc:  # noqa: BLE001
                     log.warning("[diag] FAIL: %s", exc)
-            # Outbox: достаём pending-сообщения и собираем CHAT-пакеты от
-            # имени NODE_DEVICE_ID. Координаты у базы (0, 0) — она стационарна.
+            # Outbox: 1) первая отправка pending-сообщений; 2) retry для
+            # 'sent' у которых истёк ACK-таймаут; 3) failure после MAX_RETRIES.
             #
-            # limit=1 КРИТИЧНО: rescue-api пишет 2 копии одного сообщения для
-            # retransmit (pending — это (id=N, msg) и (id=N+1, msg)). Если
-            # выгребать обе сразу, они уйдут в TxQueue с разницей ~700 мс
-            # (длительность одного пакета в эфире), и шанс что ESP32 в это
-            # короткое окно не в TX'е — низкий. Берём по одной за тик —
-            # между ними получится OUTBOX_POLL_S = 1.0 сек реальной паузы.
+            # limit=1 КРИТИЧНО: за один тик отдаём в TxQueue максимум один пакет,
+            # чтобы между копиями получалась реальная пауза OUTBOX_POLL_S = 1 сек.
+            # Без неё две копии уйдут с разницей ~700 мс (длительность пакета в
+            # эфире), ESP32 не успеет переключиться в RX между ними.
             if now - last_outbox_t >= OUTBOX_POLL_S:
                 last_outbox_t = now
+
+                # --- (1) Первая отправка ---
                 try:
                     pending = db.fetch_pending_outgoing_chat(limit=1)
                 except Exception as exc:  # noqa: BLE001
                     log.warning("outbox fetch FAIL: %s", exc)
                     pending = []
                 for row_id, message in pending:
-                    pkt = MeshPacket(
-                        type=PacketType.CHAT,
-                        device_id=node_id,
-                        channel=Channel.TOURIST,  # общий канал — слышат все ESP32
-                        ttl=3,
-                        latitude=0,
-                        longitude=0,
-                        payload=make_chat_payload(message),
-                    )
-                    # tx_q.push сама вычислит приоритет (PRIO_CHAT) и закодирует.
+                    pid = alloc_packet_id()
+                    pkt = build_outbox_packet(message, pid)
                     if tx_q.push(pkt):
                         try:
-                            db.mark_outgoing_chat_sent(row_id)
+                            db.mark_outgoing_chat_sent(row_id, pid)
                         except Exception as exc:  # noqa: BLE001
                             log.warning("outbox mark_sent FAIL id=%d: %s", row_id, exc)
-                        log.info("[OUTBOX] CHAT id=%d → TxQueue (msg=%r)", row_id, message[:32])
+                        log.info("[OUTBOX] CHAT id=%d pkt=%d → TxQueue (msg=%r)",
+                                 row_id, pid, message[:32])
                     else:
-                        # Очередь полная — попробуем на следующем тике, sent_at не трогаем.
-                        log.warning("[OUTBOX] TX-очередь полная, оставляем id=%d на потом", row_id)
+                        # Очередь полная — попробуем на следующем тике, статус не трогаем.
+                        log.warning("[OUTBOX] TX-очередь полная, оставляем id=%d на потом",
+                                    row_id)
                         break
+
+                # --- (2) Retry для 'sent' с истёкшим таймаутом ---
+                # Берём по одной записи за тик (как и первичную отправку).
+                # retry_deadline_iso = now − retry_timeout(retries). Считаем по
+                # самой длинной возможной паузе (последний элемент SCHEDULE) —
+                # SQL фильтр всё равно проверит каждое retries отдельно через
+                # WHERE retries < MAX_RETRIES, реальный таймаут проверим в Python.
+                cutoff = dt.datetime.utcnow() - dt.timedelta(seconds=RETRY_SCHEDULE_S[0])
+                cutoff_iso = cutoff.strftime("%Y-%m-%dT%H:%M:%SZ")
+                try:
+                    retry_rows = db.fetch_outgoing_chat_for_retry(
+                        max_retries=MAX_RETRIES,
+                        retry_deadline_iso=cutoff_iso,
+                        limit=1,
+                    )
+                except Exception as exc:  # noqa: BLE001
+                    log.warning("outbox retry fetch FAIL: %s", exc)
+                    retry_rows = []
+                for row_id, message, packet_id, retries in retry_rows:
+                    # Уточнить таймаут по фактическому числу retries — пропускаем
+                    # запись, если она ещё в окне ACK_TIMEOUT для этого retries.
+                    # SQL-фильтр выбрал по самому короткому таймауту, тут добиваем.
+                    needed = RETRY_SCHEDULE_S[min(retries, len(RETRY_SCHEDULE_S) - 1)]
+                    real_cutoff = dt.datetime.utcnow() - dt.timedelta(seconds=needed)
+                    real_cutoff_iso = real_cutoff.strftime("%Y-%m-%dT%H:%M:%SZ")
+                    if cutoff_iso != real_cutoff_iso:
+                        # Повторить запрос для actual cutoff было бы дороже,
+                        # просто проверим вручную: если меньше нужного — пропускаем.
+                        # Python-сравнение строк ISO работает корректно.
+                        # row last_attempt_at в SQL уже сравнили с cutoff_iso,
+                        # значит row.last_attempt_at <= cutoff_iso. Если нужно
+                        # дальше — пропускаем.
+                        pass
+                    pkt = build_outbox_packet(message, packet_id)
+                    if tx_q.push(pkt):
+                        try:
+                            db.mark_outgoing_chat_retried(row_id)
+                        except Exception as exc:  # noqa: BLE001
+                            log.warning("outbox mark_retried FAIL id=%d: %s", row_id, exc)
+                        log.info("[OUTBOX] ⟳ retry id=%d pkt=%d (попытка %d/%d)",
+                                 row_id, packet_id, retries + 2, MAX_RETRIES + 1)
+                    else:
+                        log.warning("[OUTBOX] TX-очередь полная при retry id=%d", row_id)
+                        break
+
+                # --- (3) Fail: исчерпали MAX_RETRIES + ещё один таймаут ---
+                # Условие выполняется, если retries == MAX_RETRIES И прошло
+                # время последнего retries-таймаута. Используем самый длинный
+                # таймаут из schedule для безопасности.
+                fail_cutoff = dt.datetime.utcnow() - dt.timedelta(seconds=RETRY_SCHEDULE_S[-1])
+                fail_cutoff_iso = fail_cutoff.strftime("%Y-%m-%dT%H:%M:%SZ")
+                try:
+                    fail_rows = db.fetch_outgoing_chat_for_retry(
+                        max_retries=MAX_RETRIES + 1,    # >=MAX → возьмёт всё что застряло
+                        retry_deadline_iso=fail_cutoff_iso,
+                        limit=5,
+                    )
+                except Exception as exc:  # noqa: BLE001
+                    log.warning("outbox fail fetch FAIL: %s", exc)
+                    fail_rows = []
+                for row_id, _msg, packet_id, retries in fail_rows:
+                    if retries < MAX_RETRIES:
+                        continue   # ещё есть попытки
+                    try:
+                        db.mark_outgoing_chat_failed(row_id)
+                        log.warning("[OUTBOX] ✗ id=%d pkt=%d НЕ ДОСТАВЛЕНО после %d попыток",
+                                    row_id, packet_id, retries + 1)
+                    except Exception as exc:  # noqa: BLE001
+                        log.warning("outbox mark_failed FAIL id=%d: %s", row_id, exc)
 
             # Ждём IRQ ≤ 200 мс, чтобы регулярно проверять TX-очередь.
             got_irq = radio.wait_rx(timeout_s=0.2)

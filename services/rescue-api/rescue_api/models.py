@@ -199,6 +199,10 @@ class ChatMessage(BaseModel):
     channel: int
     channel_label: str
     message: str
+    # ACK-протокол v2: для сообщений от базы — 'pending'/'sent'/'acked'/'failed'.
+    # Для сообщений от туристов — None (статус доставки на их стороне нам неизвестен).
+    # Дашборд рисует значок: ⏳ pending/sent, ✅ acked, ❌ failed.
+    delivery_status: Optional[str] = None
 
     @classmethod
     def from_row(cls, row) -> "ChatMessage":
@@ -216,6 +220,10 @@ class ChatMessage(BaseModel):
             name = row["device_name"] or ""
         except (KeyError, IndexError):
             name = ""
+        try:
+            ds = row["delivery_status"]
+        except (KeyError, IndexError):
+            ds = None
         return cls(
             id=row["id"],
             device_id=row["device_id"],
@@ -225,6 +233,7 @@ class ChatMessage(BaseModel):
             channel=ch,
             channel_label=CHANNEL_LABELS.get(ch, "?"),
             message=row["message"] or "",
+            delivery_status=ds,
         )
 
 

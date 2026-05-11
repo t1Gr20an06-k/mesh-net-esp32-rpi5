@@ -7,7 +7,10 @@
       "Bash(python -c ' *)",
       "Bash(where py *)",
       "Bash(py --version)",
-      "Bash(py -c ' *)"
+      "Bash(py -c ' *)",
+      "Bash(python -m lora_station.packet)",
+      "PowerShell($paths = @\\(\"py\", \"python3\", \"C:\\\\Python311\\\\python.exe\", \"C:\\\\Python312\\\\python.exe\"\\); foreach \\($p in $paths\\) { try { & $p --version 2>&1 | Out-Null; Write-Host \"FOUND: $p\"; break } catch { Write-Host \"MISS: $p\" } })",
+      "PowerShell(Set-Location \"c:\\\\git\\\\Mesh-net тропы\\\\services\\\\rescue-api\"; foreach \\($f in @\\(\"models.py\",\"db.py\",\"ws.py\",\"app.py\"\\)\\) { py -m py_compile \"rescue_api/$f\"; if \\($?\\) { Write-Host \"$f OK\" } else { Write-Host \"$f FAIL\"; exit 1 } })"
     ]
   }
 }

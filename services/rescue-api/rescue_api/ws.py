@@ -15,12 +15,17 @@ Polling, а не «лора-станция шлёт нам» — потому ч
 import asyncio
 import json
 import logging
+import os
 from typing import Any, Set
 
 from fastapi import WebSocket
 
 from . import db
 from .models import ChatMessage, Ping, Sos
+
+# device_id базы — нам надо отслеживать delivery_status только её сообщений
+# (для туристов он всегда None). Импорт из app.py был бы циклическим.
+_BASE_DEVICE_ID = int(os.environ.get("NODE_DEVICE_ID", "0x0001"), 0)
 
 log = logging.getLogger("rescue_api.ws")
 
@@ -45,6 +50,11 @@ class Broadcaster:
         self._last_ping_id: int = 0
         self._last_sos_id: int = 0
         self._last_chat_id: int = 0
+        # ACK-протокол v2: кеш delivery_status сообщений базы. Ключ — chat_id,
+        # значение — последний известный статус. При изменении пушим event
+        # 'chat_status'. Дёшево: SELECT по индексированному id, оператор шлёт
+        # десятки сообщений за смену, не тысячи.
+        self._chat_status_cache: dict[int, str | None] = {}
 
     # --- управление подключениями --------------------------------
 
@@ -114,11 +124,54 @@ class Broadcaster:
                     self._last_sos_id = r["id"]
 
             for r in new_chat:
-                await self._broadcast("chat", ChatMessage.from_row(r).model_dump())
+                msg = ChatMessage.from_row(r)
+                await self._broadcast("chat", msg.model_dump())
                 if r["id"] > self._last_chat_id:
                     self._last_chat_id = r["id"]
+                # Запоминаем стартовый статус сообщения от базы — на ESP32-CHAT
+                # delivery_status = None, нам неинтересно.
+                if msg.device_id == _BASE_DEVICE_ID:
+                    self._chat_status_cache[msg.id] = msg.delivery_status
+
+            # --- delivery_status: пушим изменения для сообщений базы ---
+            await self._poll_chat_statuses()
 
             await self._sleep_or_stop(POLL_INTERVAL_S)
+
+    async def _poll_chat_statuses(self) -> None:
+        """Проверить delivery_status кешированных сообщений базы.
+        Если изменился — push 'chat_status'. Финальные статусы acked/failed
+        после отправки убираются из кеша (больше не отслеживаем)."""
+        if not self._chat_status_cache:
+            return
+        ids = list(self._chat_status_cache.keys())
+        placeholders = ",".join("?" for _ in ids)
+        try:
+            with db.db_read(self._db_path) as conn:
+                rows = conn.execute(
+                    f"SELECT id, delivery_status FROM chat_messages "
+                    f"WHERE id IN ({placeholders})",
+                    ids,
+                ).fetchall()
+        except Exception as exc:  # noqa: BLE001
+            log.debug("chat_status poll FAIL: %s", exc)
+            return
+
+        for r in rows:
+            cid, status = r["id"], r["delivery_status"]
+            prev = self._chat_status_cache.get(cid)
+            if prev == status:
+                continue
+            self._chat_status_cache[cid] = status
+            await self._broadcast("chat_status", {"id": cid, "delivery_status": status})
+            # 'acked' и 'failed' финальны — больше не отслеживаем.
+            if status in ("acked", "failed"):
+                self._chat_status_cache.pop(cid, None)
+
+        # Подстраховка от утечки: больше 200 — оставляем самые свежие.
+        if len(self._chat_status_cache) > 200:
+            keep = sorted(self._chat_status_cache.keys())[-200:]
+            self._chat_status_cache = {k: self._chat_status_cache[k] for k in keep}
 
     async def _sleep_or_stop(self, seconds: float) -> None:
         """Sleep, но прерывается мгновенно если выставлен self._stop."""
@@ -142,6 +195,7 @@ class Broadcaster:
         self._last_ping_id = 0
         self._last_sos_id = 0
         self._last_chat_id = 0
+        self._chat_status_cache.clear()
         log.info("WS broadcaster: счётчики сброшены (последствие очистки БД)")
 
     # --- lifecycle -----------------------------------------------

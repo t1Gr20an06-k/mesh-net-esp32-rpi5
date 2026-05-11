@@ -40,9 +40,11 @@ GIGACHAT_AGENT_TIMEOUT = float(os.environ.get("GIGACHAT_AGENT_TIMEOUT", "25"))
 BASE_DEVICE_ID = int(os.environ.get("NODE_DEVICE_ID", "0x0001"), 0)
 BASE_DEVICE_NAME = os.environ.get("BASE_DEVICE_NAME", "База спасателей")
 
-# CHAT-payload в LoRa-пакете 48 байт. Не используем больше на уровне API —
-# иначе lora-station обрежет, и оператор не увидит, что турист получил кусок.
-CHAT_MAX_BYTES = 48
+# CHAT-payload в LoRa-пакете 64 байта (протокол v2). Не используем больше
+# на уровне API — иначе lora-station обрежет, и оператор не увидит, что
+# турист получил кусок. До v2 было 48 — синхронизировано с MESH_PAYLOAD_SIZE
+# в firmware/esp32-terminal/lib/mesh_packet/MeshPacket.h.
+CHAT_MAX_BYTES = 64
 
 # Путь до статики дашборда: services/rescue-api/rescue_api/app.py → подняться 3 раза → web/rescue-dashboard
 DASHBOARD_DIR = Path(
@@ -261,18 +263,10 @@ def messages_send(body: models.ChatSendRequest):
     with db.db_write(DB_PATH) as conn:
         db.ensure_base_device(conn, BASE_DEVICE_ID, BASE_DEVICE_NAME)
         chat_id = db.insert_base_chat(conn, BASE_DEVICE_ID, text)
-        # Кладём в outgoing_chat 3 копии. lora-station пуллит outbox раз в сек,
-        # плюс pre-LBT jitter (0-400 мс) и CSMA backoff'ы — между копиями
-        # реальный разнос 1-2 сек. Зачем 3 копии:
-        # LoRa полу-дуплекс. При синхронных нажатиях оператора и туриста оба
-        # узла стартуют TX почти одновременно — collision. Pre-CAD jitter +
-        # CSMA расходят их по времени, но не на 100%. 3 повтора с разными
-        # интервалами почти гарантируют что хотя бы одна копия дойдёт даже
-        # при пиковой нагрузке (например, оператор шлёт ответ сразу как
-        # пришёл SOS-бёрст в эфире).
-        # Дедуп на стороне ESP32 (hash payload + 30 сек) уберёт лишнее.
-        db.insert_outgoing_chat(conn, text, chat_message_id=chat_id)
-        db.insert_outgoing_chat(conn, text, chat_message_id=chat_id)
+        # ACK-протокол v2: одна копия в outgoing_chat. Retry-логика теперь
+        # на стороне lora-station через packet_id и ACK. Раньше тут было 3
+        # копии (fire-and-forget), теперь lora-station сам пересылает с тем
+        # же packet_id до MAX_RETRIES, ESP32 дедупит через hash payload.
         db.insert_outgoing_chat(conn, text, chat_message_id=chat_id)
         # Подтянем готовую строку обратно — заодно проверим, что JOIN на
         # devices.name отдаёт правильное имя ('База спасателей').
@@ -282,7 +276,7 @@ def messages_send(body: models.ChatSendRequest):
             LEFT JOIN devices d ON d.device_id = c.device_id
             WHERE c.id = ?
         """, (chat_id,)).fetchone()
-    log.info("CHAT base→tourists: id=%d %r (×3 retransmit)", chat_id, text[:32])
+    log.info("CHAT base→tourists: id=%d %r (ACK-mode, retry на lora-station)", chat_id, text[:32])
     return models.ChatMessage.from_row(row)
 
 

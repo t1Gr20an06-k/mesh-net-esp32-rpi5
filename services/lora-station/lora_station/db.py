@@ -51,7 +51,7 @@ class Database:
         Сюда же добавлять любые будущие изменения схемы — каждое CREATE/ALTER
         должно быть через IF NOT EXISTS / try-except.
         """
-        # outgoing_chat — очередь сообщений ОТ базы К туристам (этап Б чата).
+        # outgoing_chat — очередь сообщений ОТ базы К туристам.
         # Schema повторяет init.sql, FK на chat_messages намеренно нет.
         with self._lock:
             self._conn.execute("""
@@ -67,6 +67,32 @@ class Database:
                 CREATE INDEX IF NOT EXISTS idx_outgoing_pending
                     ON outgoing_chat(id) WHERE sent_at IS NULL
             """)
+
+            # --- ACK-протокол v2: новые колонки ---
+            # SQLite не имеет ADD COLUMN IF NOT EXISTS — ловим ошибку «duplicate column»
+            # и игнорируем. Альтернатива (PRAGMA table_info → diff) дороже.
+            for ddl in (
+                # packet_id для ACK-matching. NULL пока пакет не отправили.
+                "ALTER TABLE outgoing_chat ADD COLUMN packet_id INTEGER DEFAULT NULL",
+                # delivery_status: 'pending' (не отправлено) / 'sent' (TX был, ACK ждём)
+                # / 'acked' (ACK получен) / 'failed' (после MAX_RETRIES).
+                "ALTER TABLE outgoing_chat ADD COLUMN delivery_status TEXT NOT NULL DEFAULT 'pending'",
+                "ALTER TABLE outgoing_chat ADD COLUMN retries INTEGER NOT NULL DEFAULT 0",
+                # last_attempt_at — когда был последний TX. Чтобы retry-loop не
+                # бил по только что отправленному пакету.
+                "ALTER TABLE outgoing_chat ADD COLUMN last_attempt_at TEXT DEFAULT NULL",
+                "ALTER TABLE outgoing_chat ADD COLUMN acked_at TEXT DEFAULT NULL",
+                # Параллельно — статус доставки для chat_messages (вью для UI).
+                # NULL у входящих от туристов, 'pending'/.../'acked' у исходящих от базы.
+                "ALTER TABLE chat_messages ADD COLUMN delivery_status TEXT DEFAULT NULL",
+            ):
+                try:
+                    self._conn.execute(ddl)
+                except sqlite3.OperationalError as e:
+                    # «duplicate column name: ...» означает что колонка уже есть —
+                    # это норма при повторных стартах сервиса.
+                    if "duplicate column" not in str(e).lower():
+                        raise
             self._conn.commit()
 
     def close(self) -> None:
@@ -168,14 +194,16 @@ class Database:
     # успешной передачи в эфир.
 
     def fetch_pending_outgoing_chat(self, limit: int = 5) -> list[tuple[int, str]]:
-        """Вернуть [(id, message), ...] — сообщения, которые ещё не ушли в эфир.
-        Лимит — чтобы за один тик не пересушивать TxQueue (если в очереди
-        накопилось много, отправим частями)."""
+        """Вернуть [(id, message), ...] — сообщения со статусом 'pending'
+        (ещё ни разу не отправлены). retry-логика обрабатывает 'sent'-записи
+        отдельно через fetch_outgoing_chat_for_retry().
+
+        Лимит — чтобы за один тик не пересушивать TxQueue."""
         with self._cursor() as cur:
             cur.execute(
                 """
                 SELECT id, message FROM outgoing_chat
-                WHERE sent_at IS NULL
+                WHERE delivery_status = 'pending'
                 ORDER BY id ASC
                 LIMIT ?
                 """,
@@ -183,13 +211,127 @@ class Database:
             )
             return [(row[0], row[1]) for row in cur.fetchall()]
 
-    def mark_outgoing_chat_sent(self, row_id: int) -> None:
+    def fetch_outgoing_chat_for_retry(
+        self,
+        max_retries: int,
+        retry_deadline_iso: str,
+        limit: int = 5,
+    ) -> list[tuple[int, str, int, int]]:
+        """Вернуть записи в статусе 'sent', у которых last_attempt_at старше
+        retry_deadline_iso И retries < max_retries.
+
+        Возвращает [(id, message, packet_id, retries), ...]. retry_deadline_iso —
+        ISO-таймстамп: записи с last_attempt_at <= deadline считаются протухшими.
+        """
+        with self._cursor() as cur:
+            cur.execute(
+                """
+                SELECT id, message, packet_id, retries
+                FROM outgoing_chat
+                WHERE delivery_status = 'sent'
+                  AND retries < ?
+                  AND (last_attempt_at IS NULL OR last_attempt_at <= ?)
+                ORDER BY id ASC
+                LIMIT ?
+                """,
+                (max_retries, retry_deadline_iso, limit),
+            )
+            return [(r[0], r[1], r[2], r[3]) for r in cur.fetchall()]
+
+    def fetch_outgoing_chat_to_fail(self, max_retries: int) -> list[int]:
+        """row_id-ы 'sent'-записей, превысивших max_retries — пора пометить failed.
+        Возвращаются по таймауту: retries >= max_retries И прошёл ещё один
+        retry_deadline после последней попытки (см. caller-логику)."""
+        with self._cursor() as cur:
+            cur.execute(
+                """
+                SELECT id FROM outgoing_chat
+                WHERE delivery_status = 'sent' AND retries >= ?
+                """,
+                (max_retries,),
+            )
+            return [r[0] for r in cur.fetchall()]
+
+    def mark_outgoing_chat_sent(self, row_id: int, packet_id: int) -> None:
+        """Первая отправка: ставим packet_id, статус 'sent', last_attempt_at,
+        sent_at (для совместимости со старыми запросами)."""
         with self._cursor() as cur:
             cur.execute(
                 """
                 UPDATE outgoing_chat
-                SET sent_at = strftime('%Y-%m-%dT%H:%M:%SZ', 'now')
+                SET packet_id        = ?,
+                    delivery_status  = 'sent',
+                    sent_at          = COALESCE(sent_at, strftime('%Y-%m-%dT%H:%M:%SZ', 'now')),
+                    last_attempt_at  = strftime('%Y-%m-%dT%H:%M:%SZ', 'now')
                 WHERE id = ?
+                """,
+                (packet_id, row_id),
+            )
+
+    def mark_outgoing_chat_retried(self, row_id: int) -> None:
+        """Retry: инкрементируем retries, обновляем last_attempt_at.
+        packet_id не трогаем — повторяем тот же id (приёмник дедупит)."""
+        with self._cursor() as cur:
+            cur.execute(
+                """
+                UPDATE outgoing_chat
+                SET retries          = retries + 1,
+                    last_attempt_at  = strftime('%Y-%m-%dT%H:%M:%SZ', 'now')
+                WHERE id = ?
+                """,
+                (row_id,),
+            )
+
+    def mark_outgoing_chat_acked(self, packet_id: int) -> bool:
+        """Найти 'sent' запись по packet_id, пометить 'acked'.
+        Возвращает True если строка нашлась и обновилась.
+
+        Если у chat_messages есть FK по chat_message_id — каскадно обновляем
+        delivery_status и там, чтобы дашборд увидел через WS."""
+        with self._cursor() as cur:
+            cur.execute(
+                """
+                UPDATE outgoing_chat
+                SET delivery_status = 'acked',
+                    acked_at        = strftime('%Y-%m-%dT%H:%M:%SZ', 'now')
+                WHERE packet_id = ? AND delivery_status = 'sent'
+                """,
+                (packet_id,),
+            )
+            if cur.rowcount == 0:
+                return False
+            cur.execute(
+                """
+                UPDATE chat_messages
+                SET delivery_status = 'acked'
+                WHERE id IN (
+                    SELECT chat_message_id FROM outgoing_chat
+                    WHERE packet_id = ? AND chat_message_id IS NOT NULL
+                )
+                """,
+                (packet_id,),
+            )
+            return True
+
+    def mark_outgoing_chat_failed(self, row_id: int) -> None:
+        """После исчерпания MAX_RETRIES — фиксируем 'failed'. Каскадим
+        в chat_messages чтобы UI показал ❌."""
+        with self._cursor() as cur:
+            cur.execute(
+                """
+                UPDATE outgoing_chat
+                SET delivery_status = 'failed'
+                WHERE id = ?
+                """,
+                (row_id,),
+            )
+            cur.execute(
+                """
+                UPDATE chat_messages
+                SET delivery_status = 'failed'
+                WHERE id IN (
+                    SELECT chat_message_id FROM outgoing_chat WHERE id = ?
+                )
                 """,
                 (row_id,),
             )
