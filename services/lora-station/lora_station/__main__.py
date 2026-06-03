@@ -333,26 +333,20 @@ def main() -> int:
             # TX-очередь — отдаём один пакет за итерацию, чтобы не залипать.
             tx_raw = tx_q.pop(timeout=0)
             if tx_raw is not None:
-                # Pre-LBT jitter: КРИТИЧЕСКИ ВАЖНО при синхронных событиях.
-                # Если оба узла одновременно вошли в LBT, оба видят «свободно»
-                # и оба уходят в TX → collision. 0-400 мс случайной задержки
-                # ПЕРЕД LBT — узлы расходятся, один начнёт TX раньше, второй
-                # увидит занятый эфир и отступит.
+                # Pre-TX jitter: расталкивает синхронные передачи во времени.
+                # Если оба узла захотели передать одновременно, случайная
+                # задержка 0-400 мс разводит их — один начнёт TX раньше.
+                # Это главная (и дешёвая) защита от коллизий.
+                #
+                # Carrier-sense (LBT по мгновенному RSSI) убран: на сети из
+                # 2-3 узлов порог -100 дБм давал ложное «занято» (реальный фон
+                # выше -100 из-за близкого ESP32 и шума RPi5) → 4 бесполезных
+                # backoff'а перед каждым TX. Потерю при коллизии и так вытянет
+                # ACK+retry. Вернём LBT на этапе 5 (узлов станет больше), уже
+                # с замеренным порогом. Методы channel_busy/get_instant_rssi
+                # в sx1262.py оставлены для будущего.
                 time.sleep(random.uniform(0.0, 0.4))
 
-                # Listen-before-talk: спрашиваем чип «есть ли кто-то сейчас
-                # в эфире». Если да — backoff и retry. До 4 попыток; после
-                # передаём всё равно (пакет важен, особенно для SOS).
-                lbt_attempts = 0
-                while lbt_attempts < 4 and radio.channel_busy(threshold_dbm=-100):
-                    backoff = random.uniform(0.15, 0.6)
-                    log.debug("[LBT] канал занят, backoff %.0f мс", backoff * 1000)
-                    time.sleep(backoff)
-                    lbt_attempts += 1
-                if lbt_attempts > 0:
-                    log.info("[LBT] %d попыток, канал %s",
-                             lbt_attempts,
-                             "освободился" if not radio.channel_busy() else "всё ещё занят, шлём")
                 log.info("[TX] ретрансляция, %d байт", len(tx_raw))
                 ok = radio.transmit(tx_raw, timeout_s=3.0)
                 if not ok:
