@@ -236,7 +236,7 @@ def main() -> int:
                 # самой длинной возможной паузе (последний элемент SCHEDULE) —
                 # SQL фильтр всё равно проверит каждое retries отдельно через
                 # WHERE retries < MAX_RETRIES, реальный таймаут проверим в Python.
-                cutoff = dt.datetime.utcnow() - dt.timedelta(seconds=RETRY_SCHEDULE_S[0])
+                cutoff = dt.datetime.now(dt.timezone.utc) - dt.timedelta(seconds=RETRY_SCHEDULE_S[0])
                 cutoff_iso = cutoff.strftime("%Y-%m-%dT%H:%M:%SZ")
                 try:
                     retry_rows = db.fetch_outgoing_chat_for_retry(
@@ -252,7 +252,7 @@ def main() -> int:
                     # запись, если она ещё в окне ACK_TIMEOUT для этого retries.
                     # SQL-фильтр выбрал по самому короткому таймауту, тут добиваем.
                     needed = RETRY_SCHEDULE_S[min(retries, len(RETRY_SCHEDULE_S) - 1)]
-                    real_cutoff = dt.datetime.utcnow() - dt.timedelta(seconds=needed)
+                    real_cutoff = dt.datetime.now(dt.timezone.utc) - dt.timedelta(seconds=needed)
                     real_cutoff_iso = real_cutoff.strftime("%Y-%m-%dT%H:%M:%SZ")
                     if cutoff_iso != real_cutoff_iso:
                         # Повторить запрос для actual cutoff было бы дороже,
@@ -278,7 +278,7 @@ def main() -> int:
                 # Условие выполняется, если retries == MAX_RETRIES И прошло
                 # время последнего retries-таймаута. Используем самый длинный
                 # таймаут из schedule для безопасности.
-                fail_cutoff = dt.datetime.utcnow() - dt.timedelta(seconds=RETRY_SCHEDULE_S[-1])
+                fail_cutoff = dt.datetime.now(dt.timezone.utc) - dt.timedelta(seconds=RETRY_SCHEDULE_S[-1])
                 fail_cutoff_iso = fail_cutoff.strftime("%Y-%m-%dT%H:%M:%SZ")
                 try:
                     fail_rows = db.fetch_outgoing_chat_for_retry(

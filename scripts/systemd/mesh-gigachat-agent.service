@@ -33,6 +33,10 @@ StandardError=journal
 
 # Биндимся только на 127.0.0.1 — наружу сервис не светится, ходит к нему
 # rescue-api как прокси. Если нужно открыть наружу для отладки — поменяй на 0.0.0.0.
+# UTF-8 для логов независимо от системной локали (иначе кириллица в
+# journalctl превращается в \uXXXX-эскейпы или "[NNB blob data]").
+Environment="PYTHONUTF8=1"
+
 Environment="GIGACHAT_AGENT_HOST=127.0.0.1"
 Environment="GIGACHAT_AGENT_PORT=8001"
 Environment="RESCUE_API_URL=http://127.0.0.1:8000"

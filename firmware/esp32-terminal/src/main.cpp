@@ -574,6 +574,12 @@ static void prepare_index() {
 
 static void handle_root(HTTPRequest* /*req*/, HTTPResponse* res) {
     res->setHeader("Content-Type", "text/html; charset=utf-8");
+    // no-store: после `pio run -t upload` страница пересобирается (новые
+    // лимиты чата, новые скрипты), и без этого заголовка браузер на смартфоне
+    // продолжит показывать старую версию из кеша. Раньше из-за этого maxlength
+    // оставался 48 хотя в прошивке уже 64.
+    res->setHeader("Cache-Control", "no-store, must-revalidate");
+    res->setHeader("Pragma", "no-cache");
     res->print(g_index_html.c_str());
 }
 
